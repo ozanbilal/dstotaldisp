@@ -314,11 +314,10 @@ async function runBatch() {
     return isInputCandidate(name);
   });
 
-  const filesPayload = [];
-  for (const file of selectedCandidates) {
-    const bytes = await file.arrayBuffer();
-    filesPayload.push({ name: normalizeCandidateName(file.name), bytes });
-  }
+  const filesPayload = selectedCandidates.map((file) => ({
+    name: normalizeCandidateName(file.name),
+    file,
+  }));
 
   if (!filesPayload.length) {
     appendLog("warning", "No valid candidate XLSX files to process.");
@@ -327,8 +326,6 @@ async function runBatch() {
     refreshButtons();
     return;
   }
-
-  const transferables = filesPayload.map((item) => item.bytes);
 
   worker.postMessage(
     {
@@ -357,8 +354,7 @@ async function runBatch() {
           highpassTransitionHz: 0.02,
         },
       },
-    },
-    transferables
+    }
   );
 
   setStatus("Running...");

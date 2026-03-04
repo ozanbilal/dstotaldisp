@@ -29,6 +29,20 @@ function resetInputFs() {
   }
 }
 
+async function toUint8Array(fileItem) {
+  if (fileItem && fileItem.bytes != null) {
+    return new Uint8Array(fileItem.bytes);
+  }
+
+  const blob = fileItem?.file ?? fileItem?.blob ?? null;
+  if (blob && typeof blob.arrayBuffer === "function") {
+    const buffer = await blob.arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+
+  throw new Error("Invalid file payload: expected bytes or File/Blob.");
+}
+
 async function ensureInitialized() {
   if (initPromise) {
     return initPromise;
@@ -129,8 +143,9 @@ async function handleRunBatch(payload) {
   resetInputFs();
 
   const usedNames = new Set();
-  files.forEach((file, idx) => {
-    const normalized = sanitizeFileName(file.name, idx);
+  for (let idx = 0; idx < files.length; idx += 1) {
+    const file = files[idx];
+    const normalized = sanitizeFileName(file?.name, idx);
     let finalName = normalized;
     let suffix = 1;
     while (usedNames.has(finalName.toLowerCase())) {
@@ -144,9 +159,12 @@ async function handleRunBatch(payload) {
     }
     usedNames.add(finalName.toLowerCase());
 
-    const bytes = new Uint8Array(file.bytes);
+    const bytes = await toUint8Array(file);
     pyodide.FS.writeFile(`/input/${finalName}`, bytes);
-  });
+    if ((idx + 1) % 10 === 0 || idx + 1 === files.length) {
+      postStatus(`Dosyalar worker FS'e yaziliyor (${idx + 1}/${files.length})...`, "run");
+    }
+  }
 
   postStatus("Hesaplama calisiyor...", "run");
 
@@ -159,6 +177,11 @@ async function handleRunBatch(payload) {
   }
   if (pyResult && typeof pyResult.destroy === "function") {
     pyResult.destroy();
+  }
+  try {
+    pyodide.runPython("import gc; gc.collect()");
+  } catch (err) {
+    // Optional cleanup best effort.
   }
 
   self.postMessage({ type: "runBatchResult", payload: jsResult });
@@ -208,7 +231,10 @@ self.onmessage = async (event) => {
 
     self.postMessage({ type: "error", payload: { message: `Unknown worker message type: ${type}` } });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = rawMessage.toLowerCase().includes("memory access out of bounds")
+      ? "memory access out of bounds (WASM bellek limiti asildi). Daha az dosya secip partlar halinde calistirin."
+      : rawMessage;
     self.postMessage({ type: "error", payload: { message } });
     postStatus(`Hata: ${message}`, "error");
   }

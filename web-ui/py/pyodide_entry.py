@@ -1,9 +1,8 @@
 import base64
 import io
-import os
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from disp_core import process_batch_files
 
@@ -18,15 +17,32 @@ def _normalize_options(options: Any) -> Dict[str, Any]:
     return {}
 
 
+class _LazyFsFileMap(Mapping[str, bytes]):
+    def __init__(self, directory: Path) -> None:
+        self._items: Dict[str, Path] = {}
+        for item in directory.iterdir():
+            if not item.is_file() or item.suffix.lower() != ".xlsx":
+                continue
+            if item.name.startswith("~$"):
+                continue
+            self._items[item.name] = item
+
+    def __getitem__(self, key: str) -> bytes:
+        return self._items[key].read_bytes()
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
 def run_batch_from_fs(input_dir: str, options: Any = None) -> Dict[str, Any]:
     path = Path(input_dir)
     if not path.exists() or not path.is_dir():
         raise ValueError(f"Input directory does not exist in FS: {input_dir}")
 
-    file_map: Dict[str, bytes] = {}
-    for item in path.iterdir():
-        if item.is_file() and item.suffix.lower() == ".xlsx":
-            file_map[item.name] = item.read_bytes()
+    file_map: Mapping[str, bytes] = _LazyFsFileMap(path)
 
     summary = process_batch_files(file_map, _normalize_options(options))
 
