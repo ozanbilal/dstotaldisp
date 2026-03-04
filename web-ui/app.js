@@ -50,6 +50,15 @@ function setStatus(text) {
   dom.status.textContent = text;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function normalizeCandidateName(name) {
   return (name || "").split(/[\\/]/).pop() || "";
 }
@@ -159,10 +168,14 @@ function renderResults() {
     const layerCount = item.metrics?.layerCount ?? "-";
     const surfaceBase = item.metrics?.surfaceBaseTotal_m ?? NaN;
     const surfaceRss = item.metrics?.surfaceProfileRSS_m ?? NaN;
+    const pairKeyRaw = item.pairKey || "-";
+    const outputFileNameRaw = item.outputFileName || "-";
+    const pairKey = escapeHtml(pairKeyRaw);
+    const outputFileName = escapeHtml(outputFileNameRaw);
 
     tr.innerHTML = `
-      <td>${item.pairKey}</td>
-      <td>${item.outputFileName}</td>
+      <td title="${pairKey}">${pairKey}</td>
+      <td title="${outputFileName}">${outputFileName}</td>
       <td>${layerCount}</td>
       <td>${Number.isFinite(surfaceBase) ? surfaceBase.toFixed(6) : "-"}</td>
       <td>${Number.isFinite(surfaceRss) ? surfaceRss.toFixed(6) : "-"}</td>

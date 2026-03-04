@@ -346,6 +346,8 @@ button:disabled {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
 }
 
@@ -368,6 +370,44 @@ th {
   font-size: 0.76rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.results table {
+  table-layout: fixed;
+  min-width: 980px;
+}
+
+.results th:nth-child(1),
+.results td:nth-child(1) {
+  width: 34%;
+}
+
+.results th:nth-child(2),
+.results td:nth-child(2) {
+  width: 26%;
+}
+
+.results th:nth-child(3),
+.results td:nth-child(3) {
+  width: 6%;
+}
+
+.results th:nth-child(4),
+.results td:nth-child(4),
+.results th:nth-child(5),
+.results td:nth-child(5) {
+  width: 12%;
+}
+
+.results th:nth-child(6),
+.results td:nth-child(6) {
+  width: 10%;
+}
+
+.results td:nth-child(1),
+.results td:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .download-one {
