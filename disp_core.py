@@ -34,6 +34,7 @@ DEFAULT_FILTER_LOW_HZ = 0.10
 DEFAULT_FILTER_HIGH_HZ = 25.0
 DEFAULT_FILTER_ORDER = 4
 DEFAULT_BASELINE_DEGREE = 4
+DEFAULT_BASE_REFERENCE = "input"
 
 
 def _log(logs: List[Dict[str, str]], level: str, message: str) -> None:
@@ -414,12 +415,14 @@ def _processing_config(options: Mapping[str, Any] | None) -> Dict[str, Any]:
 
 def _processing_summary_text(options: Mapping[str, Any] | None) -> str:
     cfg = _processing_config(options)
+    base_ref = _normalize_base_reference((options or {}).get("baseReference", DEFAULT_BASE_REFERENCE))
     if cfg.get("legacy", True):
         return (
             "legacy-highpass"
             f" | enabled={'yes' if cfg['highpass_enabled'] else 'no'}"
             f" | cutoff={cfg['highpass_cutoff_hz']:.4f} Hz"
             f" | transition={cfg['highpass_transition_hz']:.4f} Hz"
+            f" | base-ref={base_ref}"
         )
 
     return (
@@ -428,6 +431,7 @@ def _processing_summary_text(options: Mapping[str, Any] | None) -> str:
         f" [{cfg['filter_domain']}/{cfg['filter_config']}/{cfg['filter_type']}]"
         f" low={cfg['f_low_hz']:.4f}Hz high={cfg['f_high_hz']:.4f}Hz n={cfg['filter_order']}"
         f" | scipy={'yes' if cfg['scipy_enabled'] else 'no'}"
+        f" | base-ref={base_ref}"
     )
 
 
@@ -536,6 +540,13 @@ def _to_bool(value: Any, default: bool) -> bool:
         if v in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _normalize_base_reference(value: Any) -> str:
+    ref = str(value or DEFAULT_BASE_REFERENCE).strip().lower()
+    if ref in {"deepest", "deep", "deepest_layer", "deepest-layer", "rock", "bedrock"}:
+        return "deepest_layer"
+    return "input"
 
 
 def _highpass_config(options: Mapping[str, Any] | None) -> Tuple[bool, float, float]:
@@ -775,10 +786,23 @@ def _compute_strain_bundle(
         options=options,
     )
 
+    base_reference = _normalize_base_reference((options or {}).get("baseReference", DEFAULT_BASE_REFERENCE))
+    if base_reference == "deepest_layer":
+        deepest_layer = layer_names[-1]
+        t_deep_x, a_deep_x = _read_layer_column(x_xl, deepest_layer, "Acceleration (g)")
+        t_deep_y, a_deep_y = _read_layer_column(y_xl, deepest_layer, "Acceleration (g)")
+        u_deep_x = _acc_to_disp(t_deep_x, a_deep_x, options=options)
+        u_deep_y = _acc_to_disp(t_deep_y, a_deep_y, options=options)
+        u_base_ref_x = np.interp(time, t_deep_x, u_deep_x)
+        u_base_ref_y = np.interp(time, t_deep_y, u_deep_y)
+    else:
+        u_base_ref_x = u_input_proxy_x
+        u_base_ref_y = u_input_proxy_y
+
     u_rel_input_x = u_rel_base_x - u_input_proxy_x[None, :]
     u_rel_input_y = u_rel_base_y - u_input_proxy_y[None, :]
-    u_tbdy_total_x = u_rel_base_x + u_input_proxy_x[None, :]
-    u_tbdy_total_y = u_rel_base_y + u_input_proxy_y[None, :]
+    u_tbdy_total_x = u_rel_base_x + u_base_ref_x[None, :]
+    u_tbdy_total_y = u_rel_base_y + u_base_ref_y[None, :]
 
     x_base = np.max(np.abs(u_rel_base_x), axis=1)
     y_base = np.max(np.abs(u_rel_base_y), axis=1)
@@ -806,6 +830,7 @@ def _compute_strain_bundle(
             "X_input_proxy_rel_max_m": x_input,
             "Y_input_proxy_rel_max_m": y_input,
             "Total_input_proxy_rel_max_m": total_input,
+            "Base_Reference": [base_reference] * n_layers,
         }
     )
 
@@ -818,6 +843,9 @@ def _compute_strain_bundle(
         "u_rel_base_y": u_rel_base_y,
         "u_input_proxy_x": u_input_proxy_x,
         "u_input_proxy_y": u_input_proxy_y,
+        "u_base_ref_x": u_base_ref_x,
+        "u_base_ref_y": u_base_ref_y,
+        "base_reference": base_reference,
         "u_rel_input_x": u_rel_input_x,
         "u_rel_input_y": u_rel_input_y,
         "u_tbdy_total_x": u_tbdy_total_x,
@@ -976,8 +1004,17 @@ def _compute_single_strain_bundle(
         options=options,
     )
 
+    base_reference = _normalize_base_reference((options or {}).get("baseReference", DEFAULT_BASE_REFERENCE))
+    if base_reference == "deepest_layer":
+        deepest_layer = layer_names[-1]
+        t_deep, a_deep = _read_layer_column(xl, deepest_layer, "Acceleration (g)")
+        u_deep = _acc_to_disp(t_deep, a_deep, options=options)
+        u_base_ref = np.interp(time, t_deep, u_deep)
+    else:
+        u_base_ref = u_input_proxy
+
     u_rel_input = u_rel_base - u_input_proxy[None, :]
-    u_tbdy_total = u_rel_base + u_input_proxy[None, :]
+    u_tbdy_total = u_rel_base + u_base_ref[None, :]
 
     base_rel_max = np.max(np.abs(u_rel_base), axis=1)
     tbdy_total_max = np.max(np.abs(u_tbdy_total), axis=1)
@@ -992,6 +1029,7 @@ def _compute_single_strain_bundle(
             "Base_rel_max_m": base_rel_max,
             "TBDY_total_max_m": tbdy_total_max,
             "Input_proxy_rel_max_m": input_proxy_rel_max,
+            "Base_Reference": [base_reference] * n_layers,
         }
     )
 
@@ -1002,6 +1040,8 @@ def _compute_single_strain_bundle(
         "time": time,
         "u_rel_base": u_rel_base,
         "u_rel_input": u_rel_input,
+        "u_base_ref": u_base_ref,
+        "base_reference": base_reference,
         "u_tbdy_total": u_tbdy_total,
         "summary_df": summary_df,
     }
@@ -1596,6 +1636,7 @@ def _extract_method2_single(
                 "Source_File": file_name,
                 "Axis": axis_label,
                 "Layer_Count": int(strain_bundle["u_tbdy_total"].shape[0]),
+                "Base_Reference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
                 "Processing_Mode": "legacy-highpass" if processing_cfg.get("legacy", True) else "custom",
                 "Processing_Summary": _processing_summary_text(normalized_options),
                 "Baseline_On": bool(processing_cfg.get("baseline_on", True)),
@@ -1639,6 +1680,7 @@ def _extract_method2_single(
             "metrics": {
                 "mode": "method2_single",
                 "axis": axis_label,
+                "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
                 "layerCount": int(strain_bundle["u_tbdy_total"].shape[0]),
                 "timeSeriesSheets": 1,
                 "timeSheets": [sheet_name],
@@ -1712,6 +1754,7 @@ def process_single_file(
         "metrics": {
             "mode": "single",
             "axis": axis_label,
+            "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
             "layerCount": int(len(summary_df)),
             "timeSeriesSheets": 4,
             "timeSheets": [
@@ -1790,6 +1833,8 @@ def process_xy_pair(
         "outputFileName": output_file_name,
         "outputBytes": output_bytes,
         "metrics": {
+            "mode": "pair",
+            "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
             "layerCount": int(len(strain_df)),
             "timeSeriesSheets": 6,
             "timeSheets": [
@@ -1846,6 +1891,7 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
 
 def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     normalized_options = _normalize_options(options)
+    base_reference = _normalize_base_reference(normalized_options.get("baseReference", DEFAULT_BASE_REFERENCE))
     include_manip = bool(normalized_options.get("includeManip", False))
     fail_fast = bool(normalized_options.get("failFast", False))
     method2_enabled = _to_bool(
@@ -1877,6 +1923,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     _log(logs, "info", f"Detected single files: {len(singles)}")
     _log(logs, "info", f"Method-2 output: {'on' if method2_enabled else 'off'}")
     _log(logs, "info", f"Method-3 output: {'on' if method3_enabled else 'off'}")
+    _log(logs, "info", f"Base reference: {base_reference}")
     _log(logs, "info", f"Processing config: {_processing_summary_text(normalized_options)}")
 
     for missing_x in missing:
@@ -1983,6 +2030,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                         "outputBytes": method3_bytes,
                         "metrics": {
                             "mode": "method3_aggregate",
+                            "baseReference": base_reference,
                             "xDepthRows": int(len(profile_x_df)),
                             "yDepthRows": int(len(profile_y_df)),
                             "xProfileColumns": max(0, int(profile_x_df.shape[1]) - 1),
@@ -2016,6 +2064,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             "singlesFailed": single_failed,
             "method2Enabled": bool(method2_enabled),
             "method3Enabled": bool(method3_enabled),
+            "baseReference": base_reference,
             "method2Detected": method2_detected,
             "method2Processed": method2_processed,
             "method2Failed": method2_failed,

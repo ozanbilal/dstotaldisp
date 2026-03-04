@@ -44,9 +44,14 @@ Sonra zarf degerler:
 - `X_base_rel_max_m = max_t |u_rel_base_x|`
 - `Y_base_rel_max_m = max_t |u_rel_base_y|`
 - `Total_base_rel_max_m = max_t sqrt(u_rel_base_x^2 + u_rel_base_y^2)`
-- `X_tbdy_total_max_m = max_t |u_input_proxy_x + u_rel_base_x|`
-- `Y_tbdy_total_max_m = max_t |u_input_proxy_y + u_rel_base_y|`
-- `Total_tbdy_total_max_m = max_t sqrt((u_input_proxy_x + u_rel_base_x)^2 + (u_input_proxy_y + u_rel_base_y)^2)`
+- `X_tbdy_total_max_m = max_t |u_base_ref_x + u_rel_base_x|`
+- `Y_tbdy_total_max_m = max_t |u_base_ref_y + u_rel_base_y|`
+- `Total_tbdy_total_max_m = max_t sqrt((u_base_ref_x + u_rel_base_x)^2 + (u_base_ref_y + u_rel_base_y)^2)`
+
+`u_base_ref` secimi opsiyoneldir:
+
+- `input` (varsayilan): `Input Motion` ivmesinin entegrasyonundan gelen proxy
+- `deepest_layer`: en alt layer ivmesinin entegrasyonundan gelen proxy
 
 Ayrica input-proxy referansi uretilir:
 
@@ -167,6 +172,33 @@ Tek bir toplu dosyada tum kayitlarin katman bazli maksimum profil degerleri veri
 - `Method3_Profile_Y`: `Depth_m` + her Y kayit icin `max(|u(t)|)` kolonu
 - Derinlikler dis birlestirme (`outer`) ile hizalanir.
 
+Method-3, dosya bazinda su seriden uretilir:
+
+- `u_tbdy_total(t) = u_rel_base(t) + u_base_ref(t)`
+- `u_rel_base`: strain tabanli `sum(gamma*h)` birikimi
+- `u_base_ref`: secime gore `Input Motion` veya `deepest layer` ivmesinin cift integrasyonundan
+- Method-3 profili: her derinlikte `max_t |u_tbdy_total(z,t)|`
+
+Sonra tum X dosyalari tek tabloda (`Method3_Profile_X`), tum Y dosyalari tek tabloda (`Method3_Profile_Y`) birlestirilir.
+
+## Direction vs TBDY Total Farki (Grafikler Neden Farkli?)
+
+`Direction_X_Time` / `Direction_Y_Time` ile `TBDY_Total_X_Time` / `TBDY_Total_Y_Time` ayni buyukluk degildir:
+
+- `Direction_*_Time`:
+  - her layerin kendi `Acceleration (g)` serisi cift integre edilir
+  - yani "layer acceleration -> displacement" yolagi
+- `TBDY_Total_*_Time`:
+  - strain'den gelen goreceli deplasman (`u_rel_base = sum(gamma*h)`)
+  - buna `Input Motion`dan gelen taban proxy deplasmani eklenir (`u_input_proxy`)
+  - yani `u_total = u_rel_base + u_input_proxy`
+
+Bu nedenle genlik/faz ve katmanlar arasi ayrisma dogal olarak farkli gorunur.
+Ozellikle `TBDY_Total_*` grafiklerinde cizgilerin birbirine yakin olmasi normaldir; tum katmanlara ortak `u_input_proxy` bileseni eklenir.
+
+Onemli: karsilastirmayi ayni yon icin yapin (`Direction_X_Time` vs `TBDY_Total_X_Time` veya `Direction_Y_Time` vs `TBDY_Total_Y_Time`).
+X ile Y grafigini capraz karsilastirmak (or. `TBDY Total X` vs `Direction Y`) dogrudan uyum vermez.
+
 ## Workbook Icindeki Grafikler
 
 - `Depth_Profiles`: derinlige bagli toplam profillerin tek grafikte karsilastirmasi
@@ -205,6 +237,7 @@ Opsiyonlar:
 - `--no-method3`: sadece Method-3 ciktisini devre disi birak
 - `--baseline-on`: baseline duzeltmeyi ac
 - `--filter-on`: filtering'i ac
+- `--base-reference {input,deepest_layer}`: TBDY total icin base deplasman referansi secimi
 
 Ornek:
 
@@ -236,6 +269,7 @@ UI ozellikleri:
   - `Baseline Method`
   - `Filter Config`
   - `Filter Type`
+  - `Base Reference` (`Input Motion Proxy` / `Deepest Layer Proxy`)
   - `F Low`, `F High`, `Order`
 - Batch run
 - Tekil cikti indir + toplu ZIP indir

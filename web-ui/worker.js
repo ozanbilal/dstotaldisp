@@ -127,6 +127,7 @@ async function handleRunBatch(payload) {
           singlesFailed: 0,
           method2Enabled: false,
           method3Enabled: false,
+          baseReference: "input",
           method2Detected: 0,
           method2Processed: 0,
           method2Failed: 0,

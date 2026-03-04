@@ -63,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable filtering (default: off).",
     )
+    parser.add_argument(
+        "--base-reference",
+        choices=("input", "deepest_layer"),
+        default="input",
+        help="Base displacement reference for TBDY total: input (default) or deepest_layer.",
+    )
     return parser
 
 
@@ -88,6 +94,7 @@ def main() -> int:
         "method3Enabled": method3_enabled,
         "baselineOn": bool(args.baseline_on),
         "filterOn": bool(args.filter_on),
+        "baseReference": str(args.base_reference),
     }
 
     summary = process_batch_directory(input_dir, output_dir, options)
@@ -125,6 +132,7 @@ def main() -> int:
         f"singles_failed={metrics.get('singlesFailed', 0)} "
         f"method2_enabled={metrics.get('method2Enabled', False)} "
         f"method3_enabled={metrics.get('method3Enabled', False)} "
+        f"base_reference={metrics.get('baseReference', 'input')} "
         f"method2_detected={metrics.get('method2Detected', 0)} "
         f"method2_processed={metrics.get('method2Processed', 0)} "
         f"method2_failed={metrics.get('method2Failed', 0)} "

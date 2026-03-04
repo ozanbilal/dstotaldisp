@@ -31,6 +31,7 @@ Then open:
     - `Baseline Method`
     - `Filter Config`
     - `Filter Type`
+    - `Base Reference` (`Input Motion Proxy` / `Deepest Layer Proxy`)
     - `F Low`, `F High`, `Order`
 - Output sheets per pair:
   - `Strain_Relative`
