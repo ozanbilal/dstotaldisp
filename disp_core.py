@@ -942,10 +942,10 @@ def _build_method3_aggregate_workbook(profile_x_df: pd.DataFrame, profile_y_df: 
 
         if "Method3_Profile_X" in writer.sheets:
             ws_x = writer.sheets["Method3_Profile_X"]
-            _add_depth_profile_chart(ws_x, len(x_df))
+            _add_depth_profile_chart(ws_x, len(x_df), depth_col=1, series_start_col=2)
         if "Method3_Profile_Y" in writer.sheets:
             ws_y = writer.sheets["Method3_Profile_Y"]
-            _add_depth_profile_chart(ws_y, len(y_df))
+            _add_depth_profile_chart(ws_y, len(y_df), depth_col=1, series_start_col=2)
 
     return buffer.getvalue()
 
@@ -1330,7 +1330,13 @@ def _configure_chart_axes(chart) -> None:
     chart.y_axis.majorTickMark = "out"
 
 
-def _add_depth_profile_chart(worksheet, n_rows: int) -> None:
+def _add_depth_profile_chart(
+    worksheet,
+    n_rows: int,
+    *,
+    depth_col: int = 2,
+    series_start_col: int = 3,
+) -> None:
     if n_rows < 2:
         return
 
@@ -1344,11 +1350,17 @@ def _add_depth_profile_chart(worksheet, n_rows: int) -> None:
     chart.width = 15.0
     _configure_chart_axes(chart)
 
-    y_values = Reference(worksheet, min_col=2, min_row=2, max_row=n_rows + 1)
-    for col in range(3, worksheet.max_column + 1):
+    if worksheet.max_column < series_start_col:
+        return
+
+    y_values = Reference(worksheet, min_col=depth_col, min_row=2, max_row=n_rows + 1)
+    for col in range(series_start_col, worksheet.max_column + 1):
         x_values = Reference(worksheet, min_col=col, min_row=2, max_row=n_rows + 1)
         series = Series(x_values, y_values, title=worksheet.cell(row=1, column=col).value)
         chart.series.append(series)
+
+    if not chart.series:
+        return
 
     worksheet.add_chart(chart, "H2")
 
@@ -1457,7 +1469,7 @@ def build_output_workbook(
 
         if "Depth_Profiles" in writer.sheets:
             ws_depth = writer.sheets["Depth_Profiles"]
-            _add_depth_profile_chart(ws_depth, len(depth_profiles_df))
+            _add_depth_profile_chart(ws_depth, len(depth_profiles_df), depth_col=2, series_start_col=3)
 
         if "Profile_BaseCorrected" in writer.sheets:
             ws_bc = writer.sheets["Profile_BaseCorrected"]
