@@ -84,10 +84,25 @@ def _soft_highpass_fft(
     return filtered.astype(float)
 
 
-def _acc_to_disp(time: np.ndarray, acc_g: np.ndarray) -> np.ndarray:
+def _acc_to_disp(
+    time: np.ndarray,
+    acc_g: np.ndarray,
+    *,
+    highpass_enabled: bool = True,
+    highpass_cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
+    highpass_transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
+) -> np.ndarray:
     acc_corr = _baseline_correct(acc_g.astype(float), time.astype(float))
-    acc_filt = _soft_highpass_fft(acc_corr, time)
-    vel = _cumtrapz(acc_filt * 9.81, time)
+    if highpass_enabled:
+        acc_proc = _soft_highpass_fft(
+            acc_corr,
+            time,
+            cutoff_hz=highpass_cutoff_hz,
+            transition_hz=highpass_transition_hz,
+        )
+    else:
+        acc_proc = acc_corr
+    vel = _cumtrapz(acc_proc * 9.81, time)
     return _cumtrapz(vel, time)
 
 
@@ -99,6 +114,36 @@ def _normalize_options(options: Any) -> Dict[str, Any]:
     if isinstance(options, dict):
         return dict(options)
     return {}
+
+
+def _to_float(value: Any, default: float) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if np.isfinite(out) else default
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _highpass_config(options: Mapping[str, Any] | None) -> Tuple[bool, float, float]:
+    cfg = options or {}
+    enabled = _to_bool(cfg.get("highpassEnabled", True), True)
+    cutoff = max(0.0, _to_float(cfg.get("highpassCutoffHz"), DEFAULT_HIGHPASS_CUTOFF_HZ))
+    transition = max(0.0, _to_float(cfg.get("highpassTransitionHz"), DEFAULT_HIGHPASS_TRANSITION_HZ))
+    return enabled, cutoff, transition
 
 
 def _layer_sort_key(name: str) -> Tuple[int, str]:
@@ -254,7 +299,11 @@ def _read_input_motion(xl: pd.ExcelFile) -> Tuple[np.ndarray, np.ndarray]:
     )
 
 
-def _compute_strain_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, Any]:
+def _compute_strain_bundle(
+    x_xl: pd.ExcelFile,
+    y_xl: pd.ExcelFile,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     layer_names = _ensure_common_layers(x_xl, y_xl)
 
     x_depths, thickness = parse_profile_thickness(x_xl)
@@ -315,8 +364,21 @@ def _compute_strain_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, 
     a_input_x_i = np.interp(time, t_input_x, a_input_x)
     a_input_y_i = np.interp(time, t_input_y, a_input_y)
 
-    u_input_proxy_x = _acc_to_disp(time, a_input_x_i)
-    u_input_proxy_y = _acc_to_disp(time, a_input_y_i)
+    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
+    u_input_proxy_x = _acc_to_disp(
+        time,
+        a_input_x_i,
+        highpass_enabled=hp_enabled,
+        highpass_cutoff_hz=hp_cutoff,
+        highpass_transition_hz=hp_transition,
+    )
+    u_input_proxy_y = _acc_to_disp(
+        time,
+        a_input_y_i,
+        highpass_enabled=hp_enabled,
+        highpass_cutoff_hz=hp_cutoff,
+        highpass_transition_hz=hp_transition,
+    )
 
     u_rel_input_x = u_rel_base_x - u_input_proxy_x[None, :]
     u_rel_input_y = u_rel_base_y - u_input_proxy_y[None, :]
@@ -374,8 +436,7 @@ def compute_strain_relative(
     y_xl: pd.ExcelFile,
     options: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
-    _ = options
-    bundle = _compute_strain_bundle(x_xl, y_xl)
+    bundle = _compute_strain_bundle(x_xl, y_xl, options)
     return bundle["summary_df"].copy()
 
 
@@ -396,6 +457,7 @@ def _build_layer_time_df(
 def _compute_single_strain_bundle(
     xl: pd.ExcelFile,
     axis_label: str,
+    options: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     layer_names = _list_layer_sheets(xl)
     if not layer_names:
@@ -440,7 +502,14 @@ def _compute_single_strain_bundle(
 
     t_input, a_input = _read_input_motion(xl)
     a_input_i = np.interp(time, t_input, a_input)
-    u_input_proxy = _acc_to_disp(time, a_input_i)
+    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
+    u_input_proxy = _acc_to_disp(
+        time,
+        a_input_i,
+        highpass_enabled=hp_enabled,
+        highpass_cutoff_hz=hp_cutoff,
+        highpass_transition_hz=hp_transition,
+    )
 
     u_rel_input = u_rel_base - u_input_proxy[None, :]
     u_tbdy_total = u_rel_base + u_input_proxy[None, :]
@@ -476,6 +545,7 @@ def _compute_single_strain_bundle(
 def _compute_single_direction_disp_bundle(
     xl: pd.ExcelFile,
     axis_label: str,
+    options: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     layer_names = _list_layer_sheets(xl)
     if not layer_names:
@@ -490,10 +560,17 @@ def _compute_single_direction_disp_bundle(
     t_start = -np.inf
     t_end = np.inf
     dt_min = np.inf
+    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
 
     for layer_name in layer_names:
         t, a = _read_layer_column(xl, layer_name, "Acceleration (g)")
-        d = _acc_to_disp(t, a)
+        d = _acc_to_disp(
+            t,
+            a,
+            highpass_enabled=hp_enabled,
+            highpass_cutoff_hz=hp_cutoff,
+            highpass_transition_hz=hp_transition,
+        )
         payload.append((t, d))
 
         t_start = max(t_start, t[0])
@@ -551,7 +628,11 @@ def _build_resultant_time_df(
     return pd.DataFrame(data)
 
 
-def _compute_legacy_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, Any]:
+def _compute_legacy_bundle(
+    x_xl: pd.ExcelFile,
+    y_xl: pd.ExcelFile,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     layer_names = _ensure_common_layers(x_xl, y_xl)
 
     depth_x, profile_x = _parse_profile_displacement_max(x_xl)
@@ -570,13 +651,27 @@ def _compute_legacy_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, 
     time_hist_y = np.zeros(n_layers, dtype=float)
     time_hist_resultant = np.zeros(n_layers, dtype=float)
 
+    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
+
     for i, layer_name in enumerate(layer_names):
         tx, ax = _read_layer_column(x_xl, layer_name, "Acceleration (g)")
         ty, ay = _read_layer_column(y_xl, layer_name, "Acceleration (g)")
         t, ax_i, ay_i = _align_two_series(tx, ax, ty, ay)
 
-        dx = _acc_to_disp(t, ax_i)
-        dy = _acc_to_disp(t, ay_i)
+        dx = _acc_to_disp(
+            t,
+            ax_i,
+            highpass_enabled=hp_enabled,
+            highpass_cutoff_hz=hp_cutoff,
+            highpass_transition_hz=hp_transition,
+        )
+        dy = _acc_to_disp(
+            t,
+            ay_i,
+            highpass_enabled=hp_enabled,
+            highpass_cutoff_hz=hp_cutoff,
+            highpass_transition_hz=hp_transition,
+        )
         total = np.sqrt(dx**2 + dy**2)
 
         time_hist_x[i] = float(np.max(np.abs(dx)))
@@ -610,8 +705,7 @@ def compute_legacy_methods(
     y_xl: pd.ExcelFile,
     options: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
-    _ = options
-    bundle = _compute_legacy_bundle(x_xl, y_xl)
+    bundle = _compute_legacy_bundle(x_xl, y_xl, options)
     return bundle["summary_df"].copy()
 
 
@@ -1012,12 +1106,12 @@ def process_single_file(
     file_name: str,
     options: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    _ = _normalize_options(options)
+    normalized_options = _normalize_options(options)
     axis_label = _infer_axis_label(file_name)
 
     with pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl") as xl:
-        strain_bundle = _compute_single_strain_bundle(xl, axis_label)
-        direction_bundle = _compute_single_direction_disp_bundle(xl, axis_label)
+        strain_bundle = _compute_single_strain_bundle(xl, axis_label, normalized_options)
+        direction_bundle = _compute_single_direction_disp_bundle(xl, axis_label, normalized_options)
         profile_depths, profile_max = _parse_profile_displacement_max(xl)
 
         summary_df = strain_bundle["summary_df"].copy()
@@ -1098,10 +1192,10 @@ def process_xy_pair(
     with pd.ExcelFile(io.BytesIO(x_bytes), engine="openpyxl") as x_xl, pd.ExcelFile(
         io.BytesIO(y_bytes), engine="openpyxl"
     ) as y_xl:
-        strain_bundle = _compute_strain_bundle(x_xl, y_xl)
-        legacy_bundle = _compute_legacy_bundle(x_xl, y_xl)
-        x_direction_bundle = _compute_single_direction_disp_bundle(x_xl, "X")
-        y_direction_bundle = _compute_single_direction_disp_bundle(y_xl, "Y")
+        strain_bundle = _compute_strain_bundle(x_xl, y_xl, normalized_options)
+        legacy_bundle = _compute_legacy_bundle(x_xl, y_xl, normalized_options)
+        x_direction_bundle = _compute_single_direction_disp_bundle(x_xl, "X", normalized_options)
+        y_direction_bundle = _compute_single_direction_disp_bundle(y_xl, "Y", normalized_options)
 
         strain_df = strain_bundle["summary_df"].copy()
         legacy_df = legacy_bundle["summary_df"].copy()
@@ -1207,6 +1301,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     normalized_options = _normalize_options(options)
     include_manip = bool(normalized_options.get("includeManip", False))
     fail_fast = bool(normalized_options.get("failFast", False))
+    hp_enabled, hp_cutoff, hp_transition = _highpass_config(normalized_options)
 
     logs: List[Dict[str, str]] = []
     errors: List[Dict[str, str]] = []
@@ -1226,6 +1321,11 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     _log(logs, "info", f"Candidate files: {len(file_names)}")
     _log(logs, "info", f"Detected X/Y pairs: {len(pairs)}")
     _log(logs, "info", f"Detected single files: {len(singles)}")
+    _log(
+        logs,
+        "info",
+        f"High-pass: {'on' if hp_enabled else 'off'} | cutoff={hp_cutoff:.4f} Hz | transition={hp_transition:.4f} Hz",
+    )
 
     for missing_x in missing:
         if missing_x in singles:

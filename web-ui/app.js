@@ -22,6 +22,9 @@ const dom = {
   selectedFilesList: document.getElementById("selectedFilesList"),
   failFast: document.getElementById("failFast"),
   includeManip: document.getElementById("includeManip"),
+  highpassEnabled: document.getElementById("highpassEnabled"),
+  highpassCutoffHz: document.getElementById("highpassCutoffHz"),
+  highpassTransitionHz: document.getElementById("highpassTransitionHz"),
 };
 
 const worker = new Worker("./worker.js");
@@ -187,6 +190,18 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function parseNumberInput(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
+function syncHighpassInputs() {
+  const enabled = !!dom.highpassEnabled?.checked;
+  if (dom.highpassCutoffHz) dom.highpassCutoffHz.disabled = !enabled;
+  if (dom.highpassTransitionHz) dom.highpassTransitionHz.disabled = !enabled;
+}
+
 function renderSelectedFiles() {
   const listEl = dom.selectedFilesList;
   listEl.innerHTML = "";
@@ -279,6 +294,9 @@ async function runBatch() {
           methods: "strain_legacy",
           failFast: dom.failFast.checked,
           includeManip: dom.includeManip.checked,
+          highpassEnabled: dom.highpassEnabled.checked,
+          highpassCutoffHz: parseNumberInput(dom.highpassCutoffHz.value, 0.03),
+          highpassTransitionHz: parseNumberInput(dom.highpassTransitionHz.value, 0.02),
         },
       },
     },
@@ -361,6 +379,7 @@ dom.folderInput.addEventListener("change", () => handleSelectionChange("Folder S
 dom.fileInput.addEventListener("change", () => handleSelectionChange("File Select"));
 
 dom.includeManip.addEventListener("change", updateSelectionStats);
+dom.highpassEnabled.addEventListener("change", syncHighpassInputs);
 
 dom.runBtn.addEventListener("click", () => {
   runBatch().catch((error) => {
@@ -376,4 +395,5 @@ dom.zipBtn.addEventListener("click", requestZipDownload);
 setStatus("Initializing worker...");
 appendLog("info", "Initializing Pyodide worker...");
 renderSelectedFiles();
+syncHighpassInputs();
 worker.postMessage({ type: "initialize" });

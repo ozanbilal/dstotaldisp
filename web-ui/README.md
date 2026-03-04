@@ -21,6 +21,7 @@ Then open:
   - folder selection (`webkitdirectory`)
   - direct multi-file selection (`.xlsx`)
   - supports both X/Y paired processing and single-file processing
+  - high-pass filter control (`on/off`, `cutoff`, `transition`)
 - Output sheets per pair:
   - `Strain_Relative`
   - `Legacy_Methods`

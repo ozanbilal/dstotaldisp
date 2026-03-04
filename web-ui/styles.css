@@ -105,7 +105,7 @@ h1 {
 
 .control-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 1.35fr) minmax(180px, 1fr) minmax(180px, 0.9fr);
+  grid-template-columns: minmax(280px, 1.35fr) minmax(170px, 0.8fr) minmax(240px, 1fr) minmax(180px, 0.9fr);
   gap: 12px;
 }
 
@@ -154,6 +154,42 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.filter-controls {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.5);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  align-content: center;
+  font-size: 0.8rem;
+}
+
+.filter-controls p {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+}
+
+.filter-controls label {
+  display: grid;
+  gap: 5px;
+}
+
+.filter-controls input[type="checkbox"] {
+  justify-self: start;
+}
+
+.filter-controls input[type="number"] {
+  width: 100%;
+  border: 1px solid rgba(16, 20, 24, 0.25);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 6px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
 }
 
 .action-buttons {
