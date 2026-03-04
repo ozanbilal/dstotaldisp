@@ -1344,6 +1344,7 @@ def _add_depth_profile_chart(
     chart.title = "Depth-Dependent Total Displacement Profiles"
     chart.x_axis.title = "Displacement (m)"
     chart.y_axis.title = "Depth (m)"
+    chart.scatterStyle = "lineMarker"
     chart.legend.position = "r"
     chart.y_axis.scaling.orientation = "maxMin"
     chart.height = 9.5
@@ -1356,7 +1357,8 @@ def _add_depth_profile_chart(
     y_values = Reference(worksheet, min_col=depth_col, min_row=2, max_row=n_rows + 1)
     for col in range(series_start_col, worksheet.max_column + 1):
         x_values = Reference(worksheet, min_col=col, min_row=2, max_row=n_rows + 1)
-        series = Series(x_values, y_values, title=worksheet.cell(row=1, column=col).value)
+        # ScatterChart for openpyxl expects Series(y_values, x_values).
+        series = Series(y_values, x_values, title=worksheet.cell(row=1, column=col).value)
         chart.series.append(series)
 
     if not chart.series:
@@ -1373,6 +1375,7 @@ def _add_base_corrected_chart(worksheet, n_rows: int) -> None:
     chart_x.title = "X Profile: Strain Base-Relative vs Deepsoil(Base-Corrected)"
     chart_x.x_axis.title = "Displacement (m)"
     chart_x.y_axis.title = "Depth (m)"
+    chart_x.scatterStyle = "lineMarker"
     chart_x.legend.position = "r"
     chart_x.y_axis.scaling.orientation = "maxMin"
     chart_x.height = 8.5
@@ -1382,13 +1385,14 @@ def _add_base_corrected_chart(worksheet, n_rows: int) -> None:
     y_values = Reference(worksheet, min_col=2, min_row=2, max_row=n_rows + 1)
     for col in (3, 4):
         x_values = Reference(worksheet, min_col=col, min_row=2, max_row=n_rows + 1)
-        series = Series(x_values, y_values, title=worksheet.cell(row=1, column=col).value)
+        series = Series(y_values, x_values, title=worksheet.cell(row=1, column=col).value)
         chart_x.series.append(series)
 
     chart_y = ScatterChart()
     chart_y.title = "Y Profile: Strain Base-Relative vs Deepsoil(Base-Corrected)"
     chart_y.x_axis.title = "Displacement (m)"
     chart_y.y_axis.title = "Depth (m)"
+    chart_y.scatterStyle = "lineMarker"
     chart_y.legend.position = "r"
     chart_y.y_axis.scaling.orientation = "maxMin"
     chart_y.height = 8.5
@@ -1397,7 +1401,7 @@ def _add_base_corrected_chart(worksheet, n_rows: int) -> None:
 
     for col in (6, 7):
         x_values = Reference(worksheet, min_col=col, min_row=2, max_row=n_rows + 1)
-        series = Series(x_values, y_values, title=worksheet.cell(row=1, column=col).value)
+        series = Series(y_values, x_values, title=worksheet.cell(row=1, column=col).value)
         chart_y.series.append(series)
 
     worksheet.add_chart(chart_x, "L2")
