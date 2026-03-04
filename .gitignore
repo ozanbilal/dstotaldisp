@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+
+# Local desktop metadata
+desktop.ini
+
+# Input/Output Excel artifacts (large)
+*.xlsx
+~$*.xlsx
+
+# Generated outputs and reports
+output_*
+*_alignment_report.md
+*_base_corrected_profiles.png
+*_alignment_deltas.png
+
+# Misc
+*.log

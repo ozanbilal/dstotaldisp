@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DEEPSOIL Total Displacement Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Pyodide / WASM Client-Side</p>
+        <h1>Total Displacement Lab</h1>
+        <p class="subtitle">
+          Klasor veya dosya sec, X/Y ciftlerini otomatik bul, Strain + Legacy metodlarini tek seferde hesapla.
+        </p>
+      </header>
+
+      <section class="panel controls">
+        <div class="control-grid">
+          <div class="picker-stack">
+            <label class="file-picker" data-kind="folder">
+              <input id="folderInput" type="file" webkitdirectory directory multiple />
+              <span>Folder Select</span>
+            </label>
+            <label class="file-picker" data-kind="files">
+              <input id="fileInput" type="file" accept=".xlsx" multiple />
+              <span>File Select (.xlsx)</span>
+            </label>
+          </div>
+
+          <div class="toggles">
+            <label><input id="failFast" type="checkbox" /> fail-fast</label>
+            <label><input id="includeManip" type="checkbox" /> include -manip</label>
+          </div>
+
+          <div class="action-buttons">
+            <button id="runBtn" disabled>Run Batch</button>
+            <button id="zipBtn" disabled>Download ZIP</button>
+          </div>
+        </div>
+
+        <div class="status-row">
+          <div class="status-chip">
+            <span>Status</span>
+            <strong id="statusText">Initializing...</strong>
+          </div>
+          <div class="status-chip">
+            <span>Pair Scan</span>
+            <strong id="pairStats">Pairs: 0 | Missing Y: 0</strong>
+          </div>
+          <div class="status-chip">
+            <span>Candidate Files</span>
+            <strong id="countStats">Candidate XLSX: 0</strong>
+          </div>
+        </div>
+
+        <div class="selected-files">
+          <div class="selected-files-header">
+            <span>Selected Files</span>
+            <strong id="selectedFilesMeta">0 files | 0.00 MB</strong>
+          </div>
+          <ul id="selectedFilesList" class="selected-files-list">
+            <li class="empty">No files selected.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="panel metrics">
+        <h2>Batch Metrics</h2>
+        <div id="metricCards" class="metric-grid"></div>
+      </section>
+
+      <section class="panel results">
+        <h2>Outputs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Pair Key</th>
+                <th>Output File</th>
+                <th>Layers</th>
+                <th>Surface Base Total (m)</th>
+                <th>Surface Profile RSS (m)</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="resultTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel logs">
+        <h2>Runtime Log</h2>
+        <pre id="logBox"></pre>
+      </section>
+    </main>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
