@@ -22,7 +22,6 @@ const dom = {
   selectedFilesMeta: document.getElementById("selectedFilesMeta"),
   selectedFilesList: document.getElementById("selectedFilesList"),
   failFast: document.getElementById("failFast"),
-  includeManip: document.getElementById("includeManip"),
   method2Enabled: document.getElementById("method2Enabled"),
   method3Enabled: document.getElementById("method3Enabled"),
   baselineOn: document.getElementById("baselineOn"),
@@ -59,18 +58,18 @@ function deriveYName(xName) {
   return replaced.replace(/_H1(?=\.xlsx$)/i, "_H2");
 }
 
-function isInputCandidate(name, includeManip) {
+function isInputCandidate(name) {
   const lower = name.toLowerCase();
   if (!lower.endsWith(".xlsx")) return false;
   if (lower.startsWith("output_")) return false;
   if (lower.startsWith("~$")) return false;
-  if (!includeManip && lower.endsWith("-manip.xlsx")) return false;
+  if (lower.endsWith("-manip.xlsx")) return false;
   return true;
 }
 
-function detectPairs(files, includeManip) {
+function detectPairs(files) {
   const names = files.map((file) => normalizeCandidateName(file.name));
-  const candidates = new Set(names.filter((name) => isInputCandidate(name, includeManip)));
+  const candidates = new Set(names.filter((name) => isInputCandidate(name)));
   const xFiles = [...candidates].filter((name) => name.includes("_X_") && /_H1(?=\.xlsx$)/i.test(name));
   const used = new Set();
 
@@ -188,8 +187,7 @@ function renderResults() {
 }
 
 function updateSelectionStats() {
-  const includeManip = dom.includeManip.checked;
-  const stats = detectPairs(state.selectedFiles, includeManip);
+  const stats = detectPairs(state.selectedFiles);
   dom.pairStats.textContent = `Pairs: ${stats.pairs} | Singles: ${stats.singles} | Missing Y: ${stats.missing}`;
   dom.countStats.textContent = `Candidate XLSX: ${stats.candidates}`;
 }
@@ -200,7 +198,6 @@ function refreshButtons() {
   dom.zipBtn.disabled = state.isRunning || !state.workerReady || state.results.length === 0;
   if (dom.folderInput) dom.folderInput.disabled = state.isRunning;
   if (dom.fileInput) dom.fileInput.disabled = state.isRunning;
-  if (dom.includeManip) dom.includeManip.disabled = state.isRunning;
   if (dom.failFast) dom.failFast.disabled = state.isRunning;
   if (dom.method2Enabled) dom.method2Enabled.disabled = state.isRunning;
   if (dom.method3Enabled) dom.method3Enabled.disabled = state.isRunning;
@@ -312,10 +309,9 @@ async function runBatch() {
   setStatus("Preparing files...");
   appendLog("info", `Preparing ${state.selectedFiles.length} files`);
 
-  const includeManip = !!dom.includeManip?.checked;
   const selectedCandidates = state.selectedFiles.filter((file) => {
     const name = normalizeCandidateName(file.name);
-    return isInputCandidate(name, includeManip);
+    return isInputCandidate(name);
   });
 
   const filesPayload = [];
@@ -342,7 +338,7 @@ async function runBatch() {
         options: {
           methods: "strain_legacy",
           failFast: dom.failFast.checked,
-          includeManip: dom.includeManip.checked,
+          includeManip: false,
           method2Enabled: dom.method2Enabled.checked,
           method3Enabled: dom.method3Enabled.checked,
           processingOrder: dom.processingOrder.value,
@@ -441,7 +437,6 @@ worker.addEventListener("message", (event) => {
 dom.folderInput.addEventListener("change", () => handleSelectionChange("Folder Select"));
 dom.fileInput.addEventListener("change", () => handleSelectionChange("File Select"));
 
-dom.includeManip.addEventListener("change", updateSelectionStats);
 dom.filterConfig.addEventListener("change", syncFilterInputs);
 dom.filterOn.addEventListener("change", syncFilterInputs);
 dom.baselineOn.addEventListener("change", syncFilterInputs);
