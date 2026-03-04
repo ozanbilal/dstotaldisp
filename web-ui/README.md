@@ -5,7 +5,7 @@
 Serve from the `Deepsoil` directory so `../disp_core.py` is reachable by `web-ui/worker.js`.
 
 ```powershell
-cd "H:\Drive'ım\Ortak\Bildiri_Makale\Gapping-Nongapping\Deepsoil"
+cd "<path-to-dstotaldisp>"
 python -m http.server 8010
 ```
 

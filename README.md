@@ -152,7 +152,7 @@ python GetDisp4.py --input-dir . --output-dir . --with-report
 ## Web UI (Pyodide / tam client-side)
 
 ```powershell
-cd "H:\Drive'im\Ortak\Bildiri_Makale\Gapping-Nongapping\Deepsoil"
+cd "<path-to-dstotaldisp>"
 python -m http.server 8010
 ```
 
