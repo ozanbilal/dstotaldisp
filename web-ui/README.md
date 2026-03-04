@@ -24,6 +24,8 @@ Then open:
   - Method-2 export toggle (default on)
   - Method-3 export toggle (default on)
   - processing filter controls:
+    - `Apply Baseline` (default off)
+    - `Apply Filtering` (default off)
     - `Processing Order`
     - `Filter Domain`
     - `Baseline Method`

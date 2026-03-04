@@ -24,6 +24,8 @@ const dom = {
   includeManip: document.getElementById("includeManip"),
   method2Enabled: document.getElementById("method2Enabled"),
   method3Enabled: document.getElementById("method3Enabled"),
+  baselineOn: document.getElementById("baselineOn"),
+  filterOn: document.getElementById("filterOn"),
   processingOrder: document.getElementById("processingOrder"),
   filterDomain: document.getElementById("filterDomain"),
   baselineMethod: document.getElementById("baselineMethod"),
@@ -209,12 +211,20 @@ function parseNumberInput(value, fallback) {
 }
 
 function syncFilterInputs() {
+  const baselineOn = !!dom.baselineOn?.checked;
+  const filterOn = !!dom.filterOn?.checked;
   const cfg = (dom.filterConfig?.value || "bandpass").toLowerCase();
   const isHighpass = cfg === "highpass" || cfg === "high";
   const isLowpass = cfg === "lowpass" || cfg === "low";
 
-  if (dom.fLowHz) dom.fLowHz.disabled = isHighpass;
-  if (dom.fHighHz) dom.fHighHz.disabled = isLowpass;
+  if (dom.baselineMethod) dom.baselineMethod.disabled = !baselineOn;
+  if (dom.processingOrder) dom.processingOrder.disabled = !filterOn;
+  if (dom.filterDomain) dom.filterDomain.disabled = !filterOn;
+  if (dom.filterConfig) dom.filterConfig.disabled = !filterOn;
+  if (dom.filterType) dom.filterType.disabled = !filterOn;
+  if (dom.filterOrder) dom.filterOrder.disabled = !filterOn;
+  if (dom.fLowHz) dom.fLowHz.disabled = !filterOn || isHighpass;
+  if (dom.fHighHz) dom.fHighHz.disabled = !filterOn || isLowpass;
 }
 
 function renderSelectedFiles() {
@@ -314,15 +324,15 @@ async function runBatch() {
           processingOrder: dom.processingOrder.value,
           filterDomain: dom.filterDomain.value,
           baselineMethod: dom.baselineMethod.value,
-          filterOn: true,
-          baselineOn: true,
+          filterOn: dom.filterOn.checked,
+          baselineOn: dom.baselineOn.checked,
           filterConfig: dom.filterConfig.value,
           filterType: dom.filterType.value,
           fLowHz: parseNumberInput(dom.fLowHz.value, 0.1),
           fHighHz: parseNumberInput(dom.fHighHz.value, 25),
           filterOrder: Math.max(1, Math.round(parseNumberInput(dom.filterOrder.value, 4))),
           // Legacy fields kept for backward compatibility in older workers.
-          highpassEnabled: dom.filterConfig.value === "highpass",
+          highpassEnabled: dom.filterOn.checked && dom.filterConfig.value === "highpass",
           highpassCutoffHz: parseNumberInput(dom.fHighHz.value, 25),
           highpassTransitionHz: 0.02,
         },
@@ -408,6 +418,8 @@ dom.fileInput.addEventListener("change", () => handleSelectionChange("File Selec
 
 dom.includeManip.addEventListener("change", updateSelectionStats);
 dom.filterConfig.addEventListener("change", syncFilterInputs);
+dom.filterOn.addEventListener("change", syncFilterInputs);
+dom.baselineOn.addEventListener("change", syncFilterInputs);
 
 dom.runBtn.addEventListener("click", () => {
   runBatch().catch((error) => {

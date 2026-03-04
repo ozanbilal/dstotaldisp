@@ -53,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable Method-3 aggregate output file.",
     )
+    parser.add_argument(
+        "--baseline-on",
+        action="store_true",
+        help="Enable baseline correction (default: off).",
+    )
+    parser.add_argument(
+        "--filter-on",
+        action="store_true",
+        help="Enable filtering (default: off).",
+    )
     return parser
 
 
@@ -76,6 +86,8 @@ def main() -> int:
         "failFast": bool(args.fail_fast),
         "method2Enabled": method2_enabled,
         "method3Enabled": method3_enabled,
+        "baselineOn": bool(args.baseline_on),
+        "filterOn": bool(args.filter_on),
     }
 
     summary = process_batch_directory(input_dir, output_dir, options)

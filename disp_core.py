@@ -350,15 +350,41 @@ def _processing_config(options: Mapping[str, Any] | None) -> Dict[str, Any]:
             "filterAcausal",
         )
     )
+    has_legacy_request = any(
+        key in cfg
+        for key in (
+            "highpassEnabled",
+            "highpassCutoffHz",
+            "highpassTransitionHz",
+        )
+    )
 
     highpass_enabled, highpass_cutoff_hz, highpass_transition_hz = _highpass_config(cfg)
 
     if not has_explicit_processing:
+        if has_legacy_request:
+            return {
+                "legacy": True,
+                "highpass_enabled": bool(highpass_enabled),
+                "highpass_cutoff_hz": float(highpass_cutoff_hz),
+                "highpass_transition_hz": float(highpass_transition_hz),
+            }
         return {
-            "legacy": True,
-            "highpass_enabled": bool(highpass_enabled),
-            "highpass_cutoff_hz": float(highpass_cutoff_hz),
-            "highpass_transition_hz": float(highpass_transition_hz),
+            "legacy": False,
+            "processing_order": "filter_then_baseline",
+            "baseline_on": False,
+            "baseline_method": "poly4",
+            "baseline_degree": DEFAULT_BASELINE_DEGREE,
+            "filter_on": False,
+            "filter_domain": "time",
+            "filter_config": "bandpass",
+            "filter_type": "butter",
+            "f_low_hz": DEFAULT_FILTER_LOW_HZ,
+            "f_high_hz": DEFAULT_FILTER_HIGH_HZ,
+            "filter_order": DEFAULT_FILTER_ORDER,
+            "acausal": True,
+            "transition_hz": DEFAULT_HIGHPASS_TRANSITION_HZ,
+            "scipy_enabled": bool(HAS_SCIPY),
         }
 
     f_low_default = _to_float(cfg.get("fLowHz"), DEFAULT_FILTER_LOW_HZ)

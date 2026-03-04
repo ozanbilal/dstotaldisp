@@ -88,7 +88,8 @@ Asagidaki kolonlar olusur:
 
 Evet.
 
-- Varsayilan/geriye uyumlu modda: 3. derece baseline + yumusak FFT high-pass (`cutoff=0.03 Hz`, `transition=0.02 Hz`) kullanilir.
+- Varsayilan davranis: baseline ve filtering **kapali** (ham ivme entegrasyonu).
+- Geriye uyumlu modda (legacy high-pass alanlari verilirse): 3. derece baseline + yumusak FFT high-pass (`cutoff=0.03 Hz`, `transition=0.02 Hz`) kullanilir.
 - Yeni gelismis modda: `Processing Order`, `Baseline Method`, `Filter Domain`, `Filter Config`, `Filter Type`, `F Low`, `F High`, `Order` parametreleriyle akis ayarlanir.
 - Integrasyon her durumda `_cumtrapz` ile yapilir.
 
@@ -202,6 +203,8 @@ Opsiyonlar:
 - `--no-method23`: Method-2 ve Method-3 ek ciktilarini devre disi birak
 - `--no-method2`: sadece Method-2 ciktilarini devre disi birak
 - `--no-method3`: sadece Method-3 ciktisini devre disi birak
+- `--baseline-on`: baseline duzeltmeyi ac
+- `--filter-on`: filtering'i ac
 
 Ornek:
 
@@ -226,6 +229,8 @@ UI ozellikleri:
 - Secilen dosya listesi ve pair sayaci
 - `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir
 - Processing paneli:
+  - `Apply Baseline` (default kapali)
+  - `Apply Filtering` (default kapali)
   - `Processing Order`
   - `Filter Domain`
   - `Baseline Method`
