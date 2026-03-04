@@ -87,8 +87,9 @@ Asagidaki kolonlar olusur:
 ## Baseline Filtering Var mi?
 
 Evet. `_baseline_correct(...)` icinde ivme serisine 3. derece polinom trend fit edilip cikariliyor.
-Ardindan hiz ve deplasman, trapez integrasyon (`_cumtrapz`) ile iki kez entegrasyonla uretiliyor.
-Bu akiş `legacy` ve `input-proxy` yollarinda aktif.
+Ardindan yumusak bir high-pass uygulanir (`_soft_highpass_fft`, varsayilan `cutoff=0.03 Hz`, `transition=0.02 Hz`).
+Sonra hiz ve deplasman, trapez integrasyon (`_cumtrapz`) ile iki kez entegrasyonla uretiliyor.
+Bu akis `legacy`, `input-proxy` ve single-file yon deplasman yollarinda aktif.
 
 ## Uretilen Workbook (Pair Modu, output_total_*.xlsx)
 

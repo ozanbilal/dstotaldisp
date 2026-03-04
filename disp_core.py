@@ -12,6 +12,8 @@ from openpyxl.chart import LineChart, Reference, ScatterChart, Series
 
 EXCLUDE_PREFIXES = ("output_", "~$")
 EXCLUDE_SUFFIXES = ("-manip.xlsx",)
+DEFAULT_HIGHPASS_CUTOFF_HZ = 0.03
+DEFAULT_HIGHPASS_TRANSITION_HZ = 0.02
 
 
 def _log(logs: List[Dict[str, str]], level: str, message: str) -> None:
@@ -41,9 +43,51 @@ def _baseline_correct(acc: np.ndarray, time: np.ndarray) -> np.ndarray:
     return acc - baseline
 
 
+def _soft_highpass_fft(
+    signal: np.ndarray,
+    time: np.ndarray,
+    cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
+    transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
+) -> np.ndarray:
+    x = signal.astype(float)
+    if x.size < 8:
+        return x - np.mean(x)
+
+    dt = float(np.median(np.diff(time.astype(float))))
+    if not np.isfinite(dt) or dt <= 0:
+        return x - np.mean(x)
+
+    x = x - np.mean(x)
+    n = x.size
+    freqs = np.fft.rfftfreq(n, d=dt)
+    if freqs.size <= 1:
+        return x
+
+    nyquist = 0.5 / dt
+    cutoff = float(np.clip(cutoff_hz, 0.0, max(0.0, nyquist * 0.999)))
+    transition = max(0.0, float(transition_hz))
+    stop = max(0.0, cutoff - transition)
+
+    if cutoff <= 0.0:
+        return x
+
+    transfer = np.ones_like(freqs)
+    transfer[freqs <= stop] = 0.0
+
+    if cutoff > stop:
+        mask = (freqs > stop) & (freqs < cutoff)
+        xi = (freqs[mask] - stop) / (cutoff - stop)
+        transfer[mask] = 0.5 - 0.5 * np.cos(np.pi * xi)
+
+    spectrum = np.fft.rfft(x)
+    filtered = np.fft.irfft(spectrum * transfer, n=n)
+    return filtered.astype(float)
+
+
 def _acc_to_disp(time: np.ndarray, acc_g: np.ndarray) -> np.ndarray:
     acc_corr = _baseline_correct(acc_g.astype(float), time.astype(float))
-    vel = _cumtrapz(acc_corr * 9.81, time)
+    acc_filt = _soft_highpass_fft(acc_corr, time)
+    vel = _cumtrapz(acc_filt * 9.81, time)
     return _cumtrapz(vel, time)
 
 
