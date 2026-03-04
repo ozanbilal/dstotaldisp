@@ -9,8 +9,8 @@ from report_alignment import generate_alignment_report
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Process DEEPSOIL X/Y Excel pairs and build total displacement profile outputs "
-            "(Strain_Relative + Legacy + Comparison)."
+            "Process DEEPSOIL result Excel files and build displacement outputs. "
+            "Supports both X/Y paired mode and single-file mode."
         )
     )
     parser.add_argument(
@@ -64,7 +64,8 @@ def main() -> int:
 
     for result in summary["results"]:
         print(f"[OUTPUT] {result['writtenPath']}")
-        if args.with_report:
+        mode = str(result.get("metrics", {}).get("mode", "pair")).lower()
+        if args.with_report and mode != "single":
             try:
                 artifacts = generate_alignment_report(result["writtenPath"])
                 print(f"[REPORT] {artifacts.markdown_path}")
@@ -72,6 +73,8 @@ def main() -> int:
                 print(f"[PLOT] {artifacts.delta_plot_path}")
             except Exception as report_exc:  # noqa: BLE001
                 print(f"[WARN] Report generation failed for {result['writtenPath']}: {report_exc}")
+        elif args.with_report and mode == "single":
+            print(f"[INFO] Skipping alignment report for single-file output: {result['writtenPath']}")
 
     if summary["errors"]:
         for err in summary["errors"]:
@@ -82,8 +85,13 @@ def main() -> int:
     metrics = summary["metrics"]
     print(
         "[SUMMARY] "
-        f"detected={metrics['pairsDetected']} processed={metrics['pairsProcessed']} "
-        f"failed={metrics['pairsFailed']} missing={metrics['pairsMissing']}"
+        f"pairs_detected={metrics['pairsDetected']} pairs_processed={metrics['pairsProcessed']} "
+        f"pairs_failed={metrics['pairsFailed']} pairs_missing={metrics['pairsMissing']} "
+        f"singles_detected={metrics.get('singlesDetected', 0)} "
+        f"singles_processed={metrics.get('singlesProcessed', 0)} "
+        f"singles_failed={metrics.get('singlesFailed', 0)} "
+        f"processed_total={metrics.get('processedTotal', metrics['pairsProcessed'])} "
+        f"failed_total={metrics.get('failedTotal', metrics['pairsFailed'])}"
     )
     return 0 if not summary["errors"] else 1
 

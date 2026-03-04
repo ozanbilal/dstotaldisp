@@ -59,14 +59,25 @@ function detectPairs(files, includeManip) {
   const names = files.map((file) => normalizeCandidateName(file.name));
   const candidates = new Set(names.filter((name) => isInputCandidate(name, includeManip)));
   const xFiles = [...candidates].filter((name) => name.includes("_X_") && /_H1(?=\.xlsx$)/i.test(name));
+  const used = new Set();
 
   let found = 0;
   let missing = 0;
   for (const xName of xFiles) {
-    if (candidates.has(deriveYName(xName))) {
+    const yName = deriveYName(xName);
+    if (candidates.has(yName)) {
       found += 1;
+      used.add(xName.toLowerCase());
+      used.add(yName.toLowerCase());
     } else {
       missing += 1;
+    }
+  }
+
+  let singles = 0;
+  for (const name of candidates) {
+    if (!used.has(name.toLowerCase())) {
+      singles += 1;
     }
   }
 
@@ -74,6 +85,7 @@ function detectPairs(files, includeManip) {
     candidates: candidates.size,
     pairs: found,
     missing,
+    singles,
   };
 }
 
@@ -105,8 +117,9 @@ function renderMetrics() {
 
   const entries = [
     ["Pairs Detected", metrics.pairsDetected ?? 0],
-    ["Processed", metrics.pairsProcessed ?? 0],
-    ["Failed", metrics.pairsFailed ?? 0],
+    ["Singles Detected", metrics.singlesDetected ?? 0],
+    ["Processed Total", metrics.processedTotal ?? metrics.pairsProcessed ?? 0],
+    ["Failed Total", metrics.failedTotal ?? metrics.pairsFailed ?? 0],
     ["Missing Y", metrics.pairsMissing ?? 0],
   ];
 
@@ -159,7 +172,7 @@ function renderResults() {
 function updateSelectionStats() {
   const includeManip = dom.includeManip.checked;
   const stats = detectPairs(state.selectedFiles, includeManip);
-  dom.pairStats.textContent = `Pairs: ${stats.pairs} | Missing Y: ${stats.missing}`;
+  dom.pairStats.textContent = `Pairs: ${stats.pairs} | Singles: ${stats.singles} | Missing Y: ${stats.missing}`;
   dom.countStats.textContent = `Candidate XLSX: ${stats.candidates}`;
 }
 
@@ -321,8 +334,8 @@ worker.addEventListener("message", (event) => {
     renderMetrics();
     refreshButtons();
 
-    const processed = state.metrics?.pairsProcessed ?? state.results.length;
-    const failed = state.metrics?.pairsFailed ?? state.errors.length;
+    const processed = state.metrics?.processedTotal ?? state.metrics?.pairsProcessed ?? state.results.length;
+    const failed = state.metrics?.failedTotal ?? state.metrics?.pairsFailed ?? state.errors.length;
     setStatus(`Done | Processed: ${processed}, Failed: ${failed}`);
     return;
   }

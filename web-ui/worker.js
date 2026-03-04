@@ -103,7 +103,17 @@ async function handleRunBatch(payload) {
         results: [],
         logs: [{ level: "warning", message: "No files received." }],
         errors: [],
-        metrics: { pairsDetected: 0, pairsProcessed: 0, pairsFailed: 0, pairsMissing: 0 },
+        metrics: {
+          pairsDetected: 0,
+          pairsProcessed: 0,
+          pairsFailed: 0,
+          pairsMissing: 0,
+          singlesDetected: 0,
+          singlesProcessed: 0,
+          singlesFailed: 0,
+          processedTotal: 0,
+          failedTotal: 0,
+        },
       },
     });
     return;

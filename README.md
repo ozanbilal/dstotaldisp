@@ -1,6 +1,6 @@
 # Deepsoil Total Disp Calculator
 
-DEEPSOIL X/Y sonuc dosyalarindan toplam ve goreceli yerdegistirme profillerini ureten arac.
+DEEPSOIL sonuc dosyalarindan toplam ve goreceli yerdegistirme profillerini ureten arac.
 Hem CLI (`GetDisp4.py`) hem de tarayici tabanli WASM arayuz (`web-ui/`) ayni hesap cekirdegini (`disp_core.py`) kullanir.
 
 ## Ne Cozer?
@@ -16,9 +16,11 @@ Not: Mevcut cekirdek, strain tabanli yolakta dogrudan `*_base_rel_*` (base-relat
 ## Giris Beklentisi
 
 - Dosya tipi: `.xlsx`
-- Esleme kurali:
+- Pair modu esleme kurali:
   - X dosyasi: adinda `_X_` ve sonda `_H1.xlsx`
   - Y dosyasi: ayni adin `_X_ -> _Y_`, `_H1 -> _H2` donusmus hali
+- Single-file modu:
+  - Eslestirilemeyen her uygun `.xlsx` dosya tek basina islenir.
 - Varsayilan dislama:
   - `output_*.xlsx`
   - `~$*.xlsx`
@@ -88,7 +90,7 @@ Evet. `_baseline_correct(...)` icinde ivme serisine 3. derece polinom trend fit 
 Ardindan hiz ve deplasman, trapez integrasyon (`_cumtrapz`) ile iki kez entegrasyonla uretiliyor.
 Bu akiş `legacy` ve `input-proxy` yollarinda aktif.
 
-## Uretilen Workbook (output_total_*.xlsx)
+## Uretilen Workbook (Pair Modu, output_total_*.xlsx)
 
 Her X/Y cifti icin 1 workbook uretilir.
 Sheet'ler:
@@ -126,12 +128,32 @@ Sheet'ler:
 11. `TBDY_Total_Resultant_Time`
 - Tum layerlar icin `sqrt(X_total^2 + Y_total^2)` serileri
 
+## Uretilen Workbook (Single-File Modu, output_single_*.xlsx)
+
+Eger dosya X/Y ciftine eslesmiyorsa tek basina islenir ve su sheet'ler uretilir:
+
+1. `Single_Direction_Summary`
+- Katman bazli `Base_rel_max_m`, `TBDY_total_max_m`, `Input_proxy_rel_max_m`, `Profile_max_m`, `TimeHist_maxabs_m`
+
+2. `Direction_Time`
+- O dosyanin yonundeki (X veya Y) tum layer signed deplasman-zaman serileri
+
+3. `Strain_Relative_Time`
+- Strain tabanli base-relative signed zaman serileri
+
+4. `TBDY_Total_Time`
+- Explicit `u_base + u_rel` signed zaman serileri
+
+5. `InputProxy_Relative_Time`
+- `u_rel - u_input_proxy` signed zaman serileri
+
 ## Workbook Icindeki Grafikler
 
 - `Depth_Profiles`: derinlige bagli toplam profillerin tek grafikte karsilastirmasi
 - `Profile_BaseCorrected`: X ve Y icin base-relative vs base-corrected profile grafik ciftleri
 - `Direction_X_Time`, `Direction_Y_Time`, `Resultant_Time`: layer bazli toplu zaman-serisi grafikleri
 - `TBDY_Total_X_Time`, `TBDY_Total_Y_Time`, `TBDY_Total_Resultant_Time`: explicit TBDY total zaman-serisi grafikleri
+- `Direction_Time`, `Strain_Relative_Time`, `TBDY_Total_Time`, `InputProxy_Relative_Time`: single-file grafik seti
 - Eksenler ve tick etiketleri acik olarak gosterilecek sekilde konfigure edilir.
 
 ## Opsiyonel Rapor Dosyalari

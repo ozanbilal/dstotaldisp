@@ -349,6 +349,86 @@ def _build_layer_time_df(
     return pd.DataFrame(data)
 
 
+def _compute_single_strain_bundle(
+    xl: pd.ExcelFile,
+    axis_label: str,
+) -> Dict[str, Any]:
+    layer_names = _list_layer_sheets(xl)
+    if not layer_names:
+        raise ValueError(f"Missing Layer sheets in {axis_label} file.")
+
+    depths, thickness = parse_profile_thickness(xl)
+    n_layers = min(len(layer_names), depths.size, thickness.size)
+    layer_names = layer_names[:n_layers]
+    depths = depths[:n_layers]
+    thickness = thickness[:n_layers]
+
+    payload: List[Tuple[np.ndarray, np.ndarray]] = []
+    t_start = -np.inf
+    t_end = np.inf
+    dt_min = np.inf
+
+    for layer_name in layer_names:
+        t, strain_pct = _read_layer_column(xl, layer_name, "Strain (%)")
+        gamma = strain_pct / 100.0
+        payload.append((t, gamma))
+
+        t_start = max(t_start, t[0])
+        t_end = min(t_end, t[-1])
+        if t.size > 1:
+            dt_min = min(dt_min, float(np.median(np.diff(t))))
+
+    if t_end <= t_start:
+        raise ValueError(f"No overlapping time window found across strain records in {axis_label} file.")
+
+    if not np.isfinite(dt_min) or dt_min <= 0:
+        dt_min = 0.01
+
+    sample_count = int(math.floor((t_end - t_start) / dt_min)) + 1
+    time = t_start + np.arange(sample_count, dtype=float) * dt_min
+
+    gamma_matrix = np.zeros((n_layers, sample_count), dtype=float)
+    for i, (t, gamma) in enumerate(payload):
+        gamma_matrix[i, :] = np.interp(time, t, gamma)
+
+    du = gamma_matrix * thickness[:, None]
+    u_rel_base = np.flip(np.cumsum(np.flip(du, axis=0), axis=0), axis=0)
+
+    t_input, a_input = _read_input_motion(xl)
+    a_input_i = np.interp(time, t_input, a_input)
+    u_input_proxy = _acc_to_disp(time, a_input_i)
+
+    u_rel_input = u_rel_base - u_input_proxy[None, :]
+    u_tbdy_total = u_rel_base + u_input_proxy[None, :]
+
+    base_rel_max = np.max(np.abs(u_rel_base), axis=1)
+    tbdy_total_max = np.max(np.abs(u_tbdy_total), axis=1)
+    input_proxy_rel_max = np.max(np.abs(u_rel_input), axis=1)
+
+    summary_df = pd.DataFrame(
+        {
+            "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
+            "Depth_m": depths,
+            "Thickness_m": thickness,
+            "Axis": axis_label,
+            "Base_rel_max_m": base_rel_max,
+            "TBDY_total_max_m": tbdy_total_max,
+            "Input_proxy_rel_max_m": input_proxy_rel_max,
+        }
+    )
+
+    return {
+        "layer_names": layer_names,
+        "depths": depths,
+        "thickness": thickness,
+        "time": time,
+        "u_rel_base": u_rel_base,
+        "u_rel_input": u_rel_input,
+        "u_tbdy_total": u_tbdy_total,
+        "summary_df": summary_df,
+    }
+
+
 def _compute_single_direction_disp_bundle(
     xl: pd.ExcelFile,
     axis_label: str,
@@ -809,11 +889,157 @@ def build_output_workbook(
     return buffer.getvalue()
 
 
+def build_single_output_workbook(
+    summary_df: pd.DataFrame,
+    direction_time_df: pd.DataFrame,
+    strain_rel_time_df: pd.DataFrame | None = None,
+    tbdy_total_time_df: pd.DataFrame | None = None,
+    input_proxy_rel_time_df: pd.DataFrame | None = None,
+) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Single_Direction_Summary", index=False)
+        direction_time_df.to_excel(writer, sheet_name="Direction_Time", index=False)
+
+        if strain_rel_time_df is not None and not strain_rel_time_df.empty:
+            strain_rel_time_df.to_excel(writer, sheet_name="Strain_Relative_Time", index=False)
+        if tbdy_total_time_df is not None and not tbdy_total_time_df.empty:
+            tbdy_total_time_df.to_excel(writer, sheet_name="TBDY_Total_Time", index=False)
+        if input_proxy_rel_time_df is not None and not input_proxy_rel_time_df.empty:
+            input_proxy_rel_time_df.to_excel(writer, sheet_name="InputProxy_Relative_Time", index=False)
+
+        if "Direction_Time" in writer.sheets:
+            ws_dir = writer.sheets["Direction_Time"]
+            _add_all_layers_chart(
+                ws_dir,
+                ws_dir.max_row - 1,
+                ws_dir.max_column - 1,
+                "Single Direction: All Layers Displacement-Time",
+            )
+
+        if "Strain_Relative_Time" in writer.sheets:
+            ws_sr = writer.sheets["Strain_Relative_Time"]
+            _add_all_layers_chart(
+                ws_sr,
+                ws_sr.max_row - 1,
+                ws_sr.max_column - 1,
+                "Single Direction: Strain Base-Relative Time",
+            )
+
+        if "TBDY_Total_Time" in writer.sheets:
+            ws_tb = writer.sheets["TBDY_Total_Time"]
+            _add_all_layers_chart(
+                ws_tb,
+                ws_tb.max_row - 1,
+                ws_tb.max_column - 1,
+                "Single Direction: TBDY Total Time (u_base + u_rel)",
+            )
+
+        if "InputProxy_Relative_Time" in writer.sheets:
+            ws_ip = writer.sheets["InputProxy_Relative_Time"]
+            _add_all_layers_chart(
+                ws_ip,
+                ws_ip.max_row - 1,
+                ws_ip.max_column - 1,
+                "Single Direction: Input-Proxy Relative Time",
+            )
+
+    return buffer.getvalue()
+
+
+def _infer_axis_label(file_name: str) -> str:
+    upper_name = file_name.upper()
+    if "_X_" in upper_name:
+        return "X"
+    if "_Y_" in upper_name:
+        return "Y"
+    return "SINGLE"
+
+
 def _build_pair_key(x_name: str, y_name: str) -> str:
     x_stem = Path(x_name).stem
     y_stem = Path(y_name).stem
     base = x_stem.replace("_X_", "_").replace("_H1", "")
     return f"{base}|{y_stem}"
+
+
+def process_single_file(
+    file_bytes: bytes,
+    file_name: str,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    _ = _normalize_options(options)
+    axis_label = _infer_axis_label(file_name)
+
+    with pd.ExcelFile(io.BytesIO(file_bytes), engine="openpyxl") as xl:
+        strain_bundle = _compute_single_strain_bundle(xl, axis_label)
+        direction_bundle = _compute_single_direction_disp_bundle(xl, axis_label)
+        profile_depths, profile_max = _parse_profile_displacement_max(xl)
+
+        summary_df = strain_bundle["summary_df"].copy()
+        n_layers = min(
+            len(summary_df),
+            int(direction_bundle["disp_matrix"].shape[0]),
+            int(profile_max.size),
+            int(profile_depths.size),
+        )
+        summary_df = summary_df.iloc[:n_layers].copy()
+        summary_df["Profile_max_m"] = np.abs(profile_max[:n_layers])
+        summary_df["TimeHist_maxabs_m"] = np.max(
+            np.abs(direction_bundle["disp_matrix"][:n_layers, :]),
+            axis=1,
+        )
+
+        strain_rel_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            strain_bundle["u_rel_base"],
+            "base_rel_m",
+        )
+        tbdy_total_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            strain_bundle["u_tbdy_total"],
+            "tbdy_total_m",
+        )
+        input_proxy_rel_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            strain_bundle["u_rel_input"],
+            "input_proxy_rel_m",
+        )
+
+        output_bytes = build_single_output_workbook(
+            summary_df=summary_df,
+            direction_time_df=direction_bundle["table_df"],
+            strain_rel_time_df=strain_rel_time_df,
+            tbdy_total_time_df=tbdy_total_time_df,
+            input_proxy_rel_time_df=input_proxy_rel_time_df,
+        )
+
+    output_file_name = f"output_single_{Path(file_name).stem}.xlsx"
+    return {
+        "pairKey": f"SINGLE|{Path(file_name).stem}",
+        "xFileName": file_name,
+        "yFileName": "",
+        "outputFileName": output_file_name,
+        "outputBytes": output_bytes,
+        "metrics": {
+            "mode": "single",
+            "axis": axis_label,
+            "layerCount": int(len(summary_df)),
+            "timeSeriesSheets": 4,
+            "timeSheets": [
+                "Direction_Time",
+                "Strain_Relative_Time",
+                "TBDY_Total_Time",
+                "InputProxy_Relative_Time",
+            ],
+            "surfaceBaseTotal_m": float(summary_df["Base_rel_max_m"].iloc[0]),
+            "surfaceTBDYTotal_m": float(summary_df["TBDY_total_max_m"].iloc[0]),
+            "surfaceProfileRSS_m": float(summary_df["Profile_max_m"].iloc[0]),
+        },
+    }
 
 
 def process_xy_pair(
@@ -943,13 +1169,30 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     results: List[Dict[str, Any]] = []
 
     file_names = sorted(file_map.keys())
+    candidates = sorted([name for name in file_names if _is_candidate_file(name, include_manip)])
     pairs, missing = find_xy_pairs(file_names, include_manip=include_manip)
+
+    used_in_pairs = set()
+    for x_name, y_name in pairs:
+        used_in_pairs.add(x_name)
+        used_in_pairs.add(y_name)
+
+    singles = sorted([name for name in candidates if name not in used_in_pairs])
 
     _log(logs, "info", f"Candidate files: {len(file_names)}")
     _log(logs, "info", f"Detected X/Y pairs: {len(pairs)}")
+    _log(logs, "info", f"Detected single files: {len(singles)}")
 
     for missing_x in missing:
-        _log(logs, "warning", f"No Y match for X file: {missing_x}")
+        if missing_x in singles:
+            _log(logs, "warning", f"No Y match for X file; processing single: {missing_x}")
+        else:
+            _log(logs, "warning", f"No Y match for X file: {missing_x}")
+
+    pair_processed = 0
+    pair_failed = 0
+    single_processed = 0
+    single_failed = 0
 
     for x_name, y_name in pairs:
         try:
@@ -961,12 +1204,35 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                 normalized_options,
             )
             results.append(result)
+            pair_processed += 1
             _log(logs, "info", f"Processed pair: {x_name} + {y_name}")
         except Exception as exc:  # noqa: BLE001
+            pair_failed += 1
             errors.append({"pairKey": f"{x_name}|{y_name}", "reason": str(exc)})
             _log(logs, "error", f"Failed pair {x_name} + {y_name}: {exc}")
             if fail_fast:
                 break
+
+    if not fail_fast or not errors:
+        for name in singles:
+            try:
+                result = process_single_file(
+                    file_map[name],
+                    name,
+                    normalized_options,
+                )
+                results.append(result)
+                single_processed += 1
+                _log(logs, "info", f"Processed single: {name}")
+            except Exception as exc:  # noqa: BLE001
+                single_failed += 1
+                errors.append({"pairKey": f"SINGLE|{name}", "reason": str(exc)})
+                _log(logs, "error", f"Failed single {name}: {exc}")
+                if fail_fast:
+                    break
+
+    processed_total = pair_processed + single_processed
+    failed_total = pair_failed + single_failed
 
     return {
         "results": results,
@@ -974,9 +1240,14 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
         "errors": errors,
         "metrics": {
             "pairsDetected": len(pairs),
-            "pairsProcessed": len(results),
-            "pairsFailed": len(errors),
+            "pairsProcessed": pair_processed,
+            "pairsFailed": pair_failed,
             "pairsMissing": len(missing),
+            "singlesDetected": len(singles),
+            "singlesProcessed": single_processed,
+            "singlesFailed": single_failed,
+            "processedTotal": processed_total,
+            "failedTotal": failed_total,
         },
     }
 
@@ -1016,7 +1287,9 @@ __all__ = [
     "compute_strain_relative",
     "compute_legacy_methods",
     "build_output_workbook",
+    "build_single_output_workbook",
     "process_xy_pair",
+    "process_single_file",
     "find_xy_pairs",
     "process_batch_files",
     "process_batch_directory",

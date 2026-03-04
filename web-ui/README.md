@@ -20,6 +20,7 @@ Then open:
 - Input mode:
   - folder selection (`webkitdirectory`)
   - direct multi-file selection (`.xlsx`)
+  - supports both X/Y paired processing and single-file processing
 - Output sheets per pair:
   - `Strain_Relative`
   - `Legacy_Methods`
@@ -32,3 +33,9 @@ Then open:
   - `TBDY_Total_X_Time`
   - `TBDY_Total_Y_Time`
   - `TBDY_Total_Resultant_Time`
+- Output sheets per single file:
+  - `Single_Direction_Summary`
+  - `Direction_Time`
+  - `Strain_Relative_Time`
+  - `TBDY_Total_Time`
+  - `InputProxy_Relative_Time`
