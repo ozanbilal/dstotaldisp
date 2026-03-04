@@ -9,11 +9,31 @@ import numpy as np
 import pandas as pd
 from openpyxl.chart import LineChart, Reference, ScatterChart, Series
 
+try:
+    from scipy.signal import bessel as _scipy_bessel
+    from scipy.signal import butter as _scipy_butter
+    from scipy.signal import cheby1 as _scipy_cheby1
+    from scipy.signal import filtfilt as _scipy_filtfilt
+    from scipy.signal import lfilter as _scipy_lfilter
+
+    HAS_SCIPY = True
+except Exception:  # noqa: BLE001
+    _scipy_bessel = None
+    _scipy_butter = None
+    _scipy_cheby1 = None
+    _scipy_filtfilt = None
+    _scipy_lfilter = None
+    HAS_SCIPY = False
+
 
 EXCLUDE_PREFIXES = ("output_", "~$")
 EXCLUDE_SUFFIXES = ("-manip.xlsx",)
 DEFAULT_HIGHPASS_CUTOFF_HZ = 0.03
 DEFAULT_HIGHPASS_TRANSITION_HZ = 0.02
+DEFAULT_FILTER_LOW_HZ = 0.10
+DEFAULT_FILTER_HIGH_HZ = 25.0
+DEFAULT_FILTER_ORDER = 4
+DEFAULT_BASELINE_DEGREE = 4
 
 
 def _log(logs: List[Dict[str, str]], level: str, message: str) -> None:
@@ -35,7 +55,7 @@ def _cumtrapz(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     return np.concatenate(([0.0], np.cumsum(area)))
 
 
-def _baseline_correct(acc: np.ndarray, time: np.ndarray) -> np.ndarray:
+def _baseline_correct_legacy(acc: np.ndarray, time: np.ndarray) -> np.ndarray:
     if acc.size < 4:
         return acc - np.mean(acc)
     coeff = np.polyfit(time, acc, 3)
@@ -84,26 +104,380 @@ def _soft_highpass_fft(
     return filtered.astype(float)
 
 
+def _detrend_poly(data: np.ndarray, degree: int = DEFAULT_BASELINE_DEGREE) -> np.ndarray:
+    if data is None or data.size == 0:
+        return data
+    if data.size <= max(1, int(degree)):
+        return data - np.mean(data)
+
+    x = np.arange(1, data.size + 1, dtype=float)
+    x_mean = np.mean(x)
+    x_std = np.std(x)
+    if x_std == 0:
+        return data - np.mean(data)
+
+    x = (x - x_mean) / x_std
+    try:
+        coeffs = np.polyfit(x, data, max(1, int(degree)))
+        return data - np.polyval(coeffs, x)
+    except Exception:  # noqa: BLE001
+        return data - np.mean(data)
+
+
+def _apply_baseline(data: np.ndarray, method: str, degree: int = DEFAULT_BASELINE_DEGREE) -> np.ndarray:
+    if data is None or data.size == 0:
+        return data
+
+    m = str(method or "poly4").strip().lower()
+    if m in {"none", "", "raw"}:
+        return data
+    if m in {"mean", "dc"}:
+        return data - np.mean(data)
+
+    if m.startswith("poly"):
+        digits = "".join(ch for ch in m if ch.isdigit())
+        if digits:
+            try:
+                degree = int(digits)
+            except ValueError:
+                degree = max(1, int(degree))
+
+    return _detrend_poly(data, max(1, int(degree)))
+
+
+def _build_highpass_transfer(freqs: np.ndarray, cutoff_hz: float, transition_hz: float) -> np.ndarray:
+    transfer = np.ones_like(freqs, dtype=float)
+    cutoff = max(0.0, float(cutoff_hz))
+    transition = max(1e-9, float(transition_hz))
+
+    if cutoff <= 0:
+        return transfer
+
+    stop = max(0.0, cutoff - transition)
+    transfer[freqs <= stop] = 0.0
+    if cutoff > stop:
+        mask = (freqs > stop) & (freqs < cutoff)
+        xi = (freqs[mask] - stop) / (cutoff - stop)
+        transfer[mask] = 0.5 - 0.5 * np.cos(np.pi * xi)
+    return transfer
+
+
+def _build_lowpass_transfer(freqs: np.ndarray, cutoff_hz: float, transition_hz: float) -> np.ndarray:
+    transfer = np.ones_like(freqs, dtype=float)
+    cutoff = max(0.0, float(cutoff_hz))
+    transition = max(1e-9, float(transition_hz))
+
+    if cutoff <= 0:
+        transfer[:] = 0.0
+        return transfer
+
+    stop = cutoff + transition
+    transfer[freqs >= stop] = 0.0
+    if stop > cutoff:
+        mask = (freqs > cutoff) & (freqs < stop)
+        xi = (freqs[mask] - cutoff) / (stop - cutoff)
+        transfer[mask] = 0.5 + 0.5 * np.cos(np.pi * xi)
+    return transfer
+
+
+def _fft_filter(
+    signal: np.ndarray,
+    time: np.ndarray,
+    filter_config: str,
+    f_low_hz: float,
+    f_high_hz: float,
+    transition_hz: float,
+) -> np.ndarray:
+    x = signal.astype(float)
+    if x.size < 8:
+        return x - np.mean(x)
+
+    dt = float(np.median(np.diff(time.astype(float))))
+    if not np.isfinite(dt) or dt <= 0:
+        return x - np.mean(x)
+
+    x = x - np.mean(x)
+    n = x.size
+    freqs = np.fft.rfftfreq(n, d=dt)
+    if freqs.size <= 1:
+        return x
+
+    nyquist = 0.5 / dt
+    transition = max(1e-9, float(transition_hz))
+    cfg = str(filter_config or "bandpass").strip().lower()
+
+    low = float(np.clip(max(0.0, f_low_hz), 0.0, max(0.0, nyquist * 0.999)))
+    high = float(np.clip(max(0.0, f_high_hz), 0.0, max(0.0, nyquist * 0.999)))
+
+    if cfg in {"low", "lowpass"}:
+        transfer = _build_lowpass_transfer(freqs, low, transition)
+    elif cfg in {"high", "highpass"}:
+        transfer = _build_highpass_transfer(freqs, high, transition)
+    elif cfg in {"stop", "bandstop"}:
+        if high <= low:
+            transfer = np.ones_like(freqs, dtype=float)
+        else:
+            band = _build_highpass_transfer(freqs, low, transition) * _build_lowpass_transfer(freqs, high, transition)
+            transfer = 1.0 - band
+    else:  # bandpass
+        if high <= low:
+            transfer = np.ones_like(freqs, dtype=float)
+        else:
+            transfer = _build_highpass_transfer(freqs, low, transition) * _build_lowpass_transfer(freqs, high, transition)
+
+    spectrum = np.fft.rfft(x)
+    filtered = np.fft.irfft(spectrum * transfer, n=n)
+    return filtered.astype(float)
+
+
+def _time_domain_filter(signal: np.ndarray, time: np.ndarray, cfg: Mapping[str, Any]) -> np.ndarray:
+    if not HAS_SCIPY:
+        return _fft_filter(
+            signal,
+            time,
+            str(cfg.get("filter_config", "bandpass")),
+            float(cfg.get("f_low_hz", DEFAULT_FILTER_LOW_HZ)),
+            float(cfg.get("f_high_hz", DEFAULT_FILTER_HIGH_HZ)),
+            float(cfg.get("transition_hz", DEFAULT_HIGHPASS_TRANSITION_HZ)),
+        )
+
+    dt = float(np.median(np.diff(time.astype(float))))
+    if not np.isfinite(dt) or dt <= 0:
+        return signal
+
+    fn = 1.0 / (2.0 * dt)
+    if not np.isfinite(fn) or fn <= 0:
+        return signal
+
+    cfg_name = str(cfg.get("filter_config", "bandpass")).strip().lower()
+    filter_type = str(cfg.get("filter_type", "butter")).strip().lower()
+    order = max(1, int(cfg.get("filter_order", DEFAULT_FILTER_ORDER)))
+    f_low = max(0.0, float(cfg.get("f_low_hz", DEFAULT_FILTER_LOW_HZ)))
+    f_high = max(0.0, float(cfg.get("f_high_hz", DEFAULT_FILTER_HIGH_HZ)))
+    acausal = bool(cfg.get("acausal", True))
+
+    b = None
+    a = None
+
+    if cfg_name in {"low", "lowpass"}:
+        wn = min(max(f_low / fn, 1e-6), 0.999)
+        if filter_type == "cheby":
+            b, a = _scipy_cheby1(order, 0.5, wn, btype="low")
+        elif filter_type == "bessel":
+            b, a = _scipy_bessel(order, wn, btype="low", norm="phase")
+        else:
+            b, a = _scipy_butter(order, wn, btype="low")
+    elif cfg_name in {"high", "highpass"}:
+        wn = min(max(f_high / fn, 1e-6), 0.999)
+        if filter_type == "cheby":
+            b, a = _scipy_cheby1(order, 0.5, wn, btype="high")
+        elif filter_type == "bessel":
+            b, a = _scipy_bessel(order, wn, btype="high", norm="phase")
+        else:
+            b, a = _scipy_butter(order, wn, btype="high")
+    elif cfg_name in {"stop", "bandstop"}:
+        low = max(f_low / fn, 1e-6)
+        high = min(f_high / fn, 0.999)
+        if high > low:
+            if filter_type == "cheby":
+                b, a = _scipy_cheby1(order, 0.5, [low, high], btype="bandstop")
+            elif filter_type == "bessel":
+                b, a = _scipy_bessel(order, [low, high], btype="bandstop", norm="phase")
+            else:
+                b, a = _scipy_butter(order, [low, high], btype="bandstop")
+    else:  # bandpass
+        low = max(f_low / fn, 1e-6)
+        high = min(f_high / fn, 0.999)
+        if high > low:
+            if filter_type == "cheby":
+                b, a = _scipy_cheby1(order, 0.5, [low, high], btype="bandpass")
+            elif filter_type == "bessel":
+                b, a = _scipy_bessel(order, [low, high], btype="bandpass", norm="phase")
+            else:
+                b, a = _scipy_butter(order, [low, high], btype="band")
+
+    if b is None or a is None:
+        return signal
+
+    if not acausal:
+        return _scipy_lfilter(b, a, signal)
+
+    try:
+        padlen = 3 * (max(len(a), len(b)) - 1)
+        if len(signal) <= padlen:
+            return _scipy_lfilter(b, a, signal)
+        return _scipy_filtfilt(b, a, signal)
+    except ValueError:
+        return _scipy_lfilter(b, a, signal)
+
+
+def _normalize_processing_order(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    if not v:
+        return "filter_then_baseline"
+    if "baseline" in v and "filter" in v:
+        return "baseline_then_filter" if v.find("baseline") < v.find("filter") else "filter_then_baseline"
+    if v in {"baseline_then_filter", "baseline-first", "baselinefirst"}:
+        return "baseline_then_filter"
+    return "filter_then_baseline"
+
+
+def _normalize_filter_domain(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    if "time" in v:
+        return "time"
+    if "freq" in v:
+        return "frequency"
+    return "frequency"
+
+
+def _processing_config(options: Mapping[str, Any] | None) -> Dict[str, Any]:
+    cfg = options or {}
+    has_explicit_processing = any(
+        key in cfg
+        for key in (
+            "processingOrder",
+            "baselineMethod",
+            "baselineOn",
+            "baselineDegree",
+            "filterOn",
+            "filterDomain",
+            "filterConfig",
+            "filterType",
+            "fLowHz",
+            "fHighHz",
+            "filterOrder",
+            "filterAcausal",
+        )
+    )
+
+    highpass_enabled, highpass_cutoff_hz, highpass_transition_hz = _highpass_config(cfg)
+
+    if not has_explicit_processing:
+        return {
+            "legacy": True,
+            "highpass_enabled": bool(highpass_enabled),
+            "highpass_cutoff_hz": float(highpass_cutoff_hz),
+            "highpass_transition_hz": float(highpass_transition_hz),
+        }
+
+    f_low_default = _to_float(cfg.get("fLowHz"), DEFAULT_FILTER_LOW_HZ)
+    if "fHighHz" in cfg:
+        f_high_default = _to_float(cfg.get("fHighHz"), DEFAULT_FILTER_HIGH_HZ)
+    else:
+        f_high_default = _to_float(cfg.get("highpassCutoffHz"), DEFAULT_FILTER_HIGH_HZ)
+
+    return {
+        "legacy": False,
+        "processing_order": _normalize_processing_order(cfg.get("processingOrder", "filter_then_baseline")),
+        "baseline_on": _to_bool(cfg.get("baselineOn", True), True),
+        "baseline_method": str(cfg.get("baselineMethod", "poly4")),
+        "baseline_degree": max(1, int(round(_to_float(cfg.get("baselineDegree"), DEFAULT_BASELINE_DEGREE)))),
+        "filter_on": _to_bool(cfg.get("filterOn", True), True),
+        "filter_domain": _normalize_filter_domain(cfg.get("filterDomain", "frequency")),
+        "filter_config": str(cfg.get("filterConfig", "bandpass")),
+        "filter_type": str(cfg.get("filterType", "butter")),
+        "f_low_hz": max(0.0, f_low_default),
+        "f_high_hz": max(0.0, f_high_default),
+        "filter_order": max(1, int(round(_to_float(cfg.get("filterOrder"), DEFAULT_FILTER_ORDER)))),
+        "acausal": _to_bool(cfg.get("filterAcausal", True), True),
+        "transition_hz": max(1e-9, _to_float(cfg.get("highpassTransitionHz"), DEFAULT_HIGHPASS_TRANSITION_HZ)),
+        "scipy_enabled": bool(HAS_SCIPY),
+    }
+
+
+def _processing_summary_text(options: Mapping[str, Any] | None) -> str:
+    cfg = _processing_config(options)
+    if cfg.get("legacy", True):
+        return (
+            "legacy-highpass"
+            f" | enabled={'yes' if cfg['highpass_enabled'] else 'no'}"
+            f" | cutoff={cfg['highpass_cutoff_hz']:.4f} Hz"
+            f" | transition={cfg['highpass_transition_hz']:.4f} Hz"
+        )
+
+    return (
+        f"order={cfg['processing_order']} | baseline={'on' if cfg['baseline_on'] else 'off'}"
+        f" ({cfg['baseline_method']}) | filter={'on' if cfg['filter_on'] else 'off'}"
+        f" [{cfg['filter_domain']}/{cfg['filter_config']}/{cfg['filter_type']}]"
+        f" low={cfg['f_low_hz']:.4f}Hz high={cfg['f_high_hz']:.4f}Hz n={cfg['filter_order']}"
+        f" | scipy={'yes' if cfg['scipy_enabled'] else 'no'}"
+    )
+
+
 def _acc_to_disp(
     time: np.ndarray,
     acc_g: np.ndarray,
     *,
+    options: Mapping[str, Any] | None = None,
     highpass_enabled: bool = True,
     highpass_cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
     highpass_transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
 ) -> np.ndarray:
-    acc_corr = _baseline_correct(acc_g.astype(float), time.astype(float))
-    if highpass_enabled:
-        acc_proc = _soft_highpass_fft(
-            acc_corr,
-            time,
-            cutoff_hz=highpass_cutoff_hz,
-            transition_hz=highpass_transition_hz,
-        )
+    t = time.astype(float)
+    acc = acc_g.astype(float)
+    cfg = _processing_config(options)
+
+    if cfg.get("legacy", True):
+        hp_enabled = bool(cfg.get("highpass_enabled", highpass_enabled))
+        hp_cutoff = float(cfg.get("highpass_cutoff_hz", highpass_cutoff_hz))
+        hp_transition = float(cfg.get("highpass_transition_hz", highpass_transition_hz))
+
+        acc_corr = _baseline_correct_legacy(acc, t)
+        if hp_enabled:
+            acc_proc = _soft_highpass_fft(
+                acc_corr,
+                t,
+                cutoff_hz=hp_cutoff,
+                transition_hz=hp_transition,
+            )
+        else:
+            acc_proc = acc_corr
+
+        vel = _cumtrapz(acc_proc * 9.81, t)
+        return _cumtrapz(vel, t)
+
+    acc_proc = acc.copy()
+    if cfg["processing_order"] == "baseline_then_filter":
+        if cfg["baseline_on"]:
+            acc_proc = _apply_baseline(acc_proc, cfg["baseline_method"], cfg["baseline_degree"])
+        if cfg["filter_on"]:
+            if cfg["filter_domain"] == "time":
+                acc_proc = _time_domain_filter(acc_proc, t, cfg)
+            else:
+                acc_proc = _fft_filter(
+                    acc_proc,
+                    t,
+                    cfg["filter_config"],
+                    cfg["f_low_hz"],
+                    cfg["f_high_hz"],
+                    cfg["transition_hz"],
+                )
     else:
-        acc_proc = acc_corr
-    vel = _cumtrapz(acc_proc * 9.81, time)
-    return _cumtrapz(vel, time)
+        if cfg["filter_on"]:
+            if cfg["filter_domain"] == "time":
+                acc_proc = _time_domain_filter(acc_proc, t, cfg)
+            else:
+                acc_proc = _fft_filter(
+                    acc_proc,
+                    t,
+                    cfg["filter_config"],
+                    cfg["f_low_hz"],
+                    cfg["f_high_hz"],
+                    cfg["transition_hz"],
+                )
+        if cfg["baseline_on"]:
+            acc_proc = _apply_baseline(acc_proc, cfg["baseline_method"], cfg["baseline_degree"])
+
+    vel = _cumtrapz(acc_proc * 9.81, t)
+    if cfg["baseline_on"]:
+        vel = vel - np.mean(vel)
+
+    disp = _cumtrapz(vel, t)
+    if cfg["baseline_on"]:
+        disp = _detrend_poly(disp, degree=1)
+
+    return disp
 
 
 def _normalize_options(options: Any) -> Dict[str, Any]:
@@ -364,20 +738,15 @@ def _compute_strain_bundle(
     a_input_x_i = np.interp(time, t_input_x, a_input_x)
     a_input_y_i = np.interp(time, t_input_y, a_input_y)
 
-    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
     u_input_proxy_x = _acc_to_disp(
         time,
         a_input_x_i,
-        highpass_enabled=hp_enabled,
-        highpass_cutoff_hz=hp_cutoff,
-        highpass_transition_hz=hp_transition,
+        options=options,
     )
     u_input_proxy_y = _acc_to_disp(
         time,
         a_input_y_i,
-        highpass_enabled=hp_enabled,
-        highpass_cutoff_hz=hp_cutoff,
-        highpass_transition_hz=hp_transition,
+        options=options,
     )
 
     u_rel_input_x = u_rel_base_x - u_input_proxy_x[None, :]
@@ -454,6 +823,79 @@ def _build_layer_time_df(
     return pd.DataFrame(data)
 
 
+def _method2_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_TBDY_X_Time"
+    if axis == "Y":
+        return "Method2_TBDY_Y_Time"
+    return "Method2_TBDY_Time"
+
+
+def _build_method2_workbook(time_df: pd.DataFrame, meta_df: pd.DataFrame) -> bytes:
+    axis_label = "UNKNOWN"
+    if "Axis" in meta_df.columns and not meta_df.empty:
+        axis_label = str(meta_df["Axis"].iloc[0]).upper()
+    sheet_name = _method2_sheet_name(axis_label)
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        time_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        meta_df.to_excel(writer, sheet_name="Method2_Metadata", index=False)
+
+        if sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            _add_all_layers_chart(
+                ws,
+                ws.max_row - 1,
+                ws.max_column - 1,
+                f"Method-2 TBDY {axis_label}: All Layers Time-Displacement",
+            )
+
+    return buffer.getvalue()
+
+
+def _merge_profile_frames(profile_frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    clean_frames: List[pd.DataFrame] = []
+    for frame in profile_frames:
+        if frame is None or frame.empty:
+            continue
+        f = frame.copy()
+        if "Depth_m" not in f.columns or f.shape[1] < 2:
+            continue
+        f["Depth_m"] = pd.to_numeric(f["Depth_m"], errors="coerce")
+        f = f.dropna(subset=["Depth_m"])
+        f = f.groupby("Depth_m", as_index=False).max()
+        clean_frames.append(f)
+
+    if not clean_frames:
+        return pd.DataFrame(columns=["Depth_m"])
+
+    merged = clean_frames[0]
+    for frame in clean_frames[1:]:
+        merged = merged.merge(frame, on="Depth_m", how="outer")
+    return merged.sort_values("Depth_m").reset_index(drop=True)
+
+
+def _build_method3_aggregate_workbook(profile_x_df: pd.DataFrame, profile_y_df: pd.DataFrame) -> bytes:
+    x_df = profile_x_df if profile_x_df is not None and not profile_x_df.empty else pd.DataFrame(columns=["Depth_m"])
+    y_df = profile_y_df if profile_y_df is not None and not profile_y_df.empty else pd.DataFrame(columns=["Depth_m"])
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        x_df.to_excel(writer, sheet_name="Method3_Profile_X", index=False)
+        y_df.to_excel(writer, sheet_name="Method3_Profile_Y", index=False)
+
+        if "Method3_Profile_X" in writer.sheets:
+            ws_x = writer.sheets["Method3_Profile_X"]
+            _add_depth_profile_chart(ws_x, len(x_df))
+        if "Method3_Profile_Y" in writer.sheets:
+            ws_y = writer.sheets["Method3_Profile_Y"]
+            _add_depth_profile_chart(ws_y, len(y_df))
+
+    return buffer.getvalue()
+
+
 def _compute_single_strain_bundle(
     xl: pd.ExcelFile,
     axis_label: str,
@@ -502,13 +944,10 @@ def _compute_single_strain_bundle(
 
     t_input, a_input = _read_input_motion(xl)
     a_input_i = np.interp(time, t_input, a_input)
-    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
     u_input_proxy = _acc_to_disp(
         time,
         a_input_i,
-        highpass_enabled=hp_enabled,
-        highpass_cutoff_hz=hp_cutoff,
-        highpass_transition_hz=hp_transition,
+        options=options,
     )
 
     u_rel_input = u_rel_base - u_input_proxy[None, :]
@@ -560,16 +999,12 @@ def _compute_single_direction_disp_bundle(
     t_start = -np.inf
     t_end = np.inf
     dt_min = np.inf
-    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
-
     for layer_name in layer_names:
         t, a = _read_layer_column(xl, layer_name, "Acceleration (g)")
         d = _acc_to_disp(
             t,
             a,
-            highpass_enabled=hp_enabled,
-            highpass_cutoff_hz=hp_cutoff,
-            highpass_transition_hz=hp_transition,
+            options=options,
         )
         payload.append((t, d))
 
@@ -651,8 +1086,6 @@ def _compute_legacy_bundle(
     time_hist_y = np.zeros(n_layers, dtype=float)
     time_hist_resultant = np.zeros(n_layers, dtype=float)
 
-    hp_enabled, hp_cutoff, hp_transition = _highpass_config(options)
-
     for i, layer_name in enumerate(layer_names):
         tx, ax = _read_layer_column(x_xl, layer_name, "Acceleration (g)")
         ty, ay = _read_layer_column(y_xl, layer_name, "Acceleration (g)")
@@ -661,16 +1094,12 @@ def _compute_legacy_bundle(
         dx = _acc_to_disp(
             t,
             ax_i,
-            highpass_enabled=hp_enabled,
-            highpass_cutoff_hz=hp_cutoff,
-            highpass_transition_hz=hp_transition,
+            options=options,
         )
         dy = _acc_to_disp(
             t,
             ay_i,
-            highpass_enabled=hp_enabled,
-            highpass_cutoff_hz=hp_cutoff,
-            highpass_transition_hz=hp_transition,
+            options=options,
         )
         total = np.sqrt(dx**2 + dy**2)
 
@@ -1101,6 +1530,98 @@ def _build_pair_key(x_name: str, y_name: str) -> str:
     return f"{base}|{y_stem}"
 
 
+def _extract_method2_single(
+    xlsx_bytes: bytes,
+    file_name: str,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    normalized_options = _normalize_options(options)
+    axis_label = _infer_axis_label(file_name)
+    if axis_label not in {"X", "Y"}:
+        return {
+            "skipped": True,
+            "reason": f"Axis could not be inferred from file name: {file_name}",
+            "axis": axis_label,
+        }
+
+    stem = Path(file_name).stem
+    processing_cfg = _processing_config(normalized_options)
+
+    with pd.ExcelFile(io.BytesIO(xlsx_bytes), engine="openpyxl") as xl:
+        strain_bundle = _compute_single_strain_bundle(xl, axis_label, normalized_options)
+
+    time_df = _build_layer_time_df(
+        strain_bundle["time"],
+        strain_bundle["depths"],
+        strain_bundle["u_tbdy_total"],
+        f"tbdy_total_{axis_label.lower()}_m",
+    )
+    max_abs = np.max(np.abs(strain_bundle["u_tbdy_total"]), axis=1)
+    profile_df = pd.DataFrame(
+        {
+            "Depth_m": strain_bundle["depths"][: len(max_abs)],
+            f"{stem}_maxabs_m": max_abs,
+        }
+    )
+
+    meta_df = pd.DataFrame(
+        [
+            {
+                "Source_File": file_name,
+                "Axis": axis_label,
+                "Layer_Count": int(strain_bundle["u_tbdy_total"].shape[0]),
+                "Processing_Mode": "legacy-highpass" if processing_cfg.get("legacy", True) else "custom",
+                "Processing_Summary": _processing_summary_text(normalized_options),
+                "Baseline_On": bool(processing_cfg.get("baseline_on", True)),
+                "Baseline_Method": str(processing_cfg.get("baseline_method", "poly4")),
+                "Filter_On": bool(
+                    processing_cfg.get(
+                        "filter_on",
+                        processing_cfg.get("highpass_enabled", True),
+                    )
+                ),
+                "Filter_Domain": str(processing_cfg.get("filter_domain", "frequency")),
+                "Filter_Config": str(processing_cfg.get("filter_config", "highpass")),
+                "Filter_Type": str(processing_cfg.get("filter_type", "fft")),
+                "F_Low_Hz": float(processing_cfg.get("f_low_hz", np.nan)),
+                "F_High_Hz": float(
+                    processing_cfg.get(
+                        "f_high_hz",
+                        processing_cfg.get("highpass_cutoff_hz", np.nan),
+                    )
+                ),
+                "Filter_Order": int(processing_cfg.get("filter_order", DEFAULT_FILTER_ORDER)),
+                "Highpass_Cutoff_Hz": float(processing_cfg.get("highpass_cutoff_hz", np.nan)),
+                "Highpass_Transition_Hz": float(processing_cfg.get("highpass_transition_hz", np.nan)),
+            }
+        ]
+    )
+
+    output_bytes = _build_method2_workbook(time_df, meta_df)
+    sheet_name = _method2_sheet_name(axis_label)
+
+    return {
+        "skipped": False,
+        "axis": axis_label,
+        "profile_df": profile_df,
+        "result": {
+            "pairKey": f"METHOD2|{stem}",
+            "xFileName": file_name if axis_label == "X" else "",
+            "yFileName": file_name if axis_label == "Y" else "",
+            "outputFileName": f"output_method2_{stem}.xlsx",
+            "outputBytes": output_bytes,
+            "metrics": {
+                "mode": "method2_single",
+                "axis": axis_label,
+                "layerCount": int(strain_bundle["u_tbdy_total"].shape[0]),
+                "timeSeriesSheets": 1,
+                "timeSheets": [sheet_name],
+                "surfaceTBDYTotal_m": float(max_abs[0]) if max_abs.size else float("nan"),
+            },
+        },
+    }
+
+
 def process_single_file(
     file_bytes: bytes,
     file_name: str,
@@ -1301,7 +1822,14 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     normalized_options = _normalize_options(options)
     include_manip = bool(normalized_options.get("includeManip", False))
     fail_fast = bool(normalized_options.get("failFast", False))
-    hp_enabled, hp_cutoff, hp_transition = _highpass_config(normalized_options)
+    method2_enabled = _to_bool(
+        normalized_options.get("method2Enabled", normalized_options.get("method23Enabled", True)),
+        True,
+    )
+    method3_enabled = _to_bool(
+        normalized_options.get("method3Enabled", normalized_options.get("method23Enabled", True)),
+        True,
+    )
 
     logs: List[Dict[str, str]] = []
     errors: List[Dict[str, str]] = []
@@ -1318,14 +1846,12 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
     singles = sorted([name for name in candidates if name not in used_in_pairs])
 
-    _log(logs, "info", f"Candidate files: {len(file_names)}")
+    _log(logs, "info", f"Candidate files: {len(candidates)}")
     _log(logs, "info", f"Detected X/Y pairs: {len(pairs)}")
     _log(logs, "info", f"Detected single files: {len(singles)}")
-    _log(
-        logs,
-        "info",
-        f"High-pass: {'on' if hp_enabled else 'off'} | cutoff={hp_cutoff:.4f} Hz | transition={hp_transition:.4f} Hz",
-    )
+    _log(logs, "info", f"Method-2 output: {'on' if method2_enabled else 'off'}")
+    _log(logs, "info", f"Method-3 output: {'on' if method3_enabled else 'off'}")
+    _log(logs, "info", f"Processing config: {_processing_summary_text(normalized_options)}")
 
     for missing_x in missing:
         if missing_x in singles:
@@ -1337,6 +1863,13 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     pair_failed = 0
     single_processed = 0
     single_failed = 0
+    method2_detected = len(candidates) if (method2_enabled or method3_enabled) else 0
+    method2_processed = 0
+    method2_failed = 0
+    method3_produced = 0
+    method3_failed = 0
+    method2_profile_x_frames: List[pd.DataFrame] = []
+    method2_profile_y_frames: List[pd.DataFrame] = []
 
     for x_name, y_name in pairs:
         try:
@@ -1375,8 +1908,73 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                 if fail_fast:
                     break
 
-    processed_total = pair_processed + single_processed
-    failed_total = pair_failed + single_failed
+    if (method2_enabled or method3_enabled) and (not fail_fast or not errors):
+        for name in candidates:
+            try:
+                extracted = _extract_method2_single(
+                    file_map[name],
+                    name,
+                    normalized_options,
+                )
+                if extracted.get("skipped", False):
+                    _log(logs, "warning", str(extracted.get("reason", f"Skipped Method-2 file: {name}")))
+                    continue
+
+                if method2_enabled:
+                    result = extracted["result"]
+                    results.append(result)
+                    method2_processed += 1
+
+                axis = str(extracted.get("axis", "")).upper()
+                profile_df = extracted.get("profile_df")
+                if method3_enabled and isinstance(profile_df, pd.DataFrame) and not profile_df.empty:
+                    if axis == "X":
+                        method2_profile_x_frames.append(profile_df)
+                    elif axis == "Y":
+                        method2_profile_y_frames.append(profile_df)
+
+                _log(logs, "info", f"Processed Method-2 basis file: {name}")
+            except Exception as exc:  # noqa: BLE001
+                method2_failed += 1
+                errors.append({"pairKey": f"METHOD2|{name}", "reason": str(exc)})
+                _log(logs, "error", f"Failed Method-2 file {name}: {exc}")
+                if fail_fast:
+                    break
+
+    if method3_enabled and (not fail_fast or not errors):
+        profile_x_df = _merge_profile_frames(method2_profile_x_frames)
+        profile_y_df = _merge_profile_frames(method2_profile_y_frames)
+
+        if not profile_x_df.empty or not profile_y_df.empty:
+            try:
+                method3_bytes = _build_method3_aggregate_workbook(profile_x_df, profile_y_df)
+                results.append(
+                    {
+                        "pairKey": "METHOD3|ALL",
+                        "xFileName": "",
+                        "yFileName": "",
+                        "outputFileName": "output_method3_profiles_all.xlsx",
+                        "outputBytes": method3_bytes,
+                        "metrics": {
+                            "mode": "method3_aggregate",
+                            "xDepthRows": int(len(profile_x_df)),
+                            "yDepthRows": int(len(profile_y_df)),
+                            "xProfileColumns": max(0, int(profile_x_df.shape[1]) - 1),
+                            "yProfileColumns": max(0, int(profile_y_df.shape[1]) - 1),
+                        },
+                    }
+                )
+                method3_produced = 1
+                _log(logs, "info", "Produced Method-3 aggregate workbook: output_method3_profiles_all.xlsx")
+            except Exception as exc:  # noqa: BLE001
+                method3_failed += 1
+                errors.append({"pairKey": "METHOD3|ALL", "reason": str(exc)})
+                _log(logs, "error", f"Failed Method-3 aggregate workbook: {exc}")
+        else:
+            _log(logs, "warning", "Method-3 aggregate workbook skipped: no valid Method-2 profiles found.")
+
+    processed_total = pair_processed + single_processed + method2_processed + method3_produced
+    failed_total = pair_failed + single_failed + method2_failed + method3_failed
 
     return {
         "results": results,
@@ -1390,6 +1988,12 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             "singlesDetected": len(singles),
             "singlesProcessed": single_processed,
             "singlesFailed": single_failed,
+            "method2Enabled": bool(method2_enabled),
+            "method3Enabled": bool(method3_enabled),
+            "method2Detected": method2_detected,
+            "method2Processed": method2_processed,
+            "method2Failed": method2_failed,
+            "method3Produced": method3_produced,
             "processedTotal": processed_total,
             "failedTotal": failed_total,
         },

@@ -22,9 +22,16 @@ const dom = {
   selectedFilesList: document.getElementById("selectedFilesList"),
   failFast: document.getElementById("failFast"),
   includeManip: document.getElementById("includeManip"),
-  highpassEnabled: document.getElementById("highpassEnabled"),
-  highpassCutoffHz: document.getElementById("highpassCutoffHz"),
-  highpassTransitionHz: document.getElementById("highpassTransitionHz"),
+  method2Enabled: document.getElementById("method2Enabled"),
+  method3Enabled: document.getElementById("method3Enabled"),
+  processingOrder: document.getElementById("processingOrder"),
+  filterDomain: document.getElementById("filterDomain"),
+  baselineMethod: document.getElementById("baselineMethod"),
+  filterConfig: document.getElementById("filterConfig"),
+  filterType: document.getElementById("filterType"),
+  fLowHz: document.getElementById("fLowHz"),
+  fHighHz: document.getElementById("fHighHz"),
+  filterOrder: document.getElementById("filterOrder"),
 };
 
 const worker = new Worker("./worker.js");
@@ -119,8 +126,13 @@ function renderMetrics() {
   if (!metrics) return;
 
   const entries = [
+    ["Method2 Enabled", metrics.method2Enabled ? "yes" : "no"],
+    ["Method3 Enabled", metrics.method3Enabled ? "yes" : "no"],
     ["Pairs Detected", metrics.pairsDetected ?? 0],
     ["Singles Detected", metrics.singlesDetected ?? 0],
+    ["Method2 Processed", metrics.method2Processed ?? 0],
+    ["Method2 Failed", metrics.method2Failed ?? 0],
+    ["Method3 Produced", metrics.method3Produced ?? 0],
     ["Processed Total", metrics.processedTotal ?? metrics.pairsProcessed ?? 0],
     ["Failed Total", metrics.failedTotal ?? metrics.pairsFailed ?? 0],
     ["Missing Y", metrics.pairsMissing ?? 0],
@@ -196,10 +208,13 @@ function parseNumberInput(value, fallback) {
   return parsed;
 }
 
-function syncHighpassInputs() {
-  const enabled = !!dom.highpassEnabled?.checked;
-  if (dom.highpassCutoffHz) dom.highpassCutoffHz.disabled = !enabled;
-  if (dom.highpassTransitionHz) dom.highpassTransitionHz.disabled = !enabled;
+function syncFilterInputs() {
+  const cfg = (dom.filterConfig?.value || "bandpass").toLowerCase();
+  const isHighpass = cfg === "highpass" || cfg === "high";
+  const isLowpass = cfg === "lowpass" || cfg === "low";
+
+  if (dom.fLowHz) dom.fLowHz.disabled = isHighpass;
+  if (dom.fHighHz) dom.fHighHz.disabled = isLowpass;
 }
 
 function renderSelectedFiles() {
@@ -294,9 +309,22 @@ async function runBatch() {
           methods: "strain_legacy",
           failFast: dom.failFast.checked,
           includeManip: dom.includeManip.checked,
-          highpassEnabled: dom.highpassEnabled.checked,
-          highpassCutoffHz: parseNumberInput(dom.highpassCutoffHz.value, 0.03),
-          highpassTransitionHz: parseNumberInput(dom.highpassTransitionHz.value, 0.02),
+          method2Enabled: dom.method2Enabled.checked,
+          method3Enabled: dom.method3Enabled.checked,
+          processingOrder: dom.processingOrder.value,
+          filterDomain: dom.filterDomain.value,
+          baselineMethod: dom.baselineMethod.value,
+          filterOn: true,
+          baselineOn: true,
+          filterConfig: dom.filterConfig.value,
+          filterType: dom.filterType.value,
+          fLowHz: parseNumberInput(dom.fLowHz.value, 0.1),
+          fHighHz: parseNumberInput(dom.fHighHz.value, 25),
+          filterOrder: Math.max(1, Math.round(parseNumberInput(dom.filterOrder.value, 4))),
+          // Legacy fields kept for backward compatibility in older workers.
+          highpassEnabled: dom.filterConfig.value === "highpass",
+          highpassCutoffHz: parseNumberInput(dom.fHighHz.value, 25),
+          highpassTransitionHz: 0.02,
         },
       },
     },
@@ -379,7 +407,7 @@ dom.folderInput.addEventListener("change", () => handleSelectionChange("Folder S
 dom.fileInput.addEventListener("change", () => handleSelectionChange("File Select"));
 
 dom.includeManip.addEventListener("change", updateSelectionStats);
-dom.highpassEnabled.addEventListener("change", syncHighpassInputs);
+dom.filterConfig.addEventListener("change", syncFilterInputs);
 
 dom.runBtn.addEventListener("click", () => {
   runBatch().catch((error) => {
@@ -395,5 +423,5 @@ dom.zipBtn.addEventListener("click", requestZipDownload);
 setStatus("Initializing worker...");
 appendLog("info", "Initializing Pyodide worker...");
 renderSelectedFiles();
-syncHighpassInputs();
+syncFilterInputs();
 worker.postMessage({ type: "initialize" });

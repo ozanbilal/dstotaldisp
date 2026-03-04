@@ -86,11 +86,11 @@ Asagidaki kolonlar olusur:
 
 ## Baseline Filtering Var mi?
 
-Evet. `_baseline_correct(...)` icinde ivme serisine 3. derece polinom trend fit edilip cikariliyor.
-Ardindan yumusak bir high-pass uygulanir (`_soft_highpass_fft`, varsayilan `cutoff=0.03 Hz`, `transition=0.02 Hz`).
-Sonra hiz ve deplasman, trapez integrasyon (`_cumtrapz`) ile iki kez entegrasyonla uretiliyor.
-Bu akis `legacy`, `input-proxy` ve single-file yon deplasman yollarinda aktif.
-Web UI uzerinden high-pass `on/off`, `cutoff`, `transition` parametreleri degistirilebilir.
+Evet.
+
+- Varsayilan/geriye uyumlu modda: 3. derece baseline + yumusak FFT high-pass (`cutoff=0.03 Hz`, `transition=0.02 Hz`) kullanilir.
+- Yeni gelismis modda: `Processing Order`, `Baseline Method`, `Filter Domain`, `Filter Config`, `Filter Type`, `F Low`, `F High`, `Order` parametreleriyle akis ayarlanir.
+- Integrasyon her durumda `_cumtrapz` ile yapilir.
 
 ## Uretilen Workbook (Pair Modu, output_total_*.xlsx)
 
@@ -149,6 +149,23 @@ Eger dosya X/Y ciftine eslesmiyorsa tek basina islenir ve su sheet'ler uretilir:
 5. `InputProxy_Relative_Time`
 - `u_rel - u_input_proxy` signed zaman serileri
 
+## Method-2 Ek Ciktisi (Dosya Bazli, output_method2_*.xlsx)
+
+Her uygun giris `.xlsx` dosyasi icin ayri uretilir.
+
+- X dosyalari: `Method2_TBDY_X_Time`
+- Y dosyalari: `Method2_TBDY_Y_Time`
+- Ilk sutun: `Time_s`
+- Diger sutunlar: katman bazli TBDY toplam deplasman zaman serileri (`u_base + u_rel`)
+
+## Method-3 Ek Ciktisi (Toplu, output_method3_profiles_all.xlsx)
+
+Tek bir toplu dosyada tum kayitlarin katman bazli maksimum profil degerleri verilir.
+
+- `Method3_Profile_X`: `Depth_m` + her X kayit icin `max(|u(t)|)` kolonu
+- `Method3_Profile_Y`: `Depth_m` + her Y kayit icin `max(|u(t)|)` kolonu
+- Derinlikler dis birlestirme (`outer`) ile hizalanir.
+
 ## Workbook Icindeki Grafikler
 
 - `Depth_Profiles`: derinlige bagli toplam profillerin tek grafikte karsilastirmasi
@@ -182,6 +199,9 @@ Opsiyonlar:
 - `--include-manip`: `*-manip.xlsx` dosyalarini da eslemeye kat
 - `--fail-fast`: ilk hatada dur
 - `--with-report`: alignment markdown + png raporlarini da uret
+- `--no-method23`: Method-2 ve Method-3 ek ciktilarini devre disi birak
+- `--no-method2`: sadece Method-2 ciktilarini devre disi birak
+- `--no-method3`: sadece Method-3 ciktisini devre disi birak
 
 Ornek:
 
@@ -204,6 +224,14 @@ UI ozellikleri:
 
 - Folder select (`webkitdirectory`) + direkt dosya secimi
 - Secilen dosya listesi ve pair sayaci
+- `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir
+- Processing paneli:
+  - `Processing Order`
+  - `Filter Domain`
+  - `Baseline Method`
+  - `Filter Config`
+  - `Filter Type`
+  - `F Low`, `F High`, `Order`
 - Batch run
 - Tekil cikti indir + toplu ZIP indir
 

@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DEEPSOIL Total Displacement Lab</title>
+    <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -38,19 +39,67 @@
           <div class="toggles">
             <label><input id="failFast" type="checkbox" /> fail-fast</label>
             <label><input id="includeManip" type="checkbox" /> include -manip</label>
+            <label><input id="method2Enabled" type="checkbox" checked /> Method-2 outputs</label>
+            <label><input id="method3Enabled" type="checkbox" checked /> Method-3 outputs</label>
           </div>
 
           <div class="filter-controls">
-            <p>Integration Filter</p>
-            <label><input id="highpassEnabled" type="checkbox" checked /> high-pass</label>
-            <label>
-              cutoff (Hz)
-              <input id="highpassCutoffHz" type="number" min="0" step="0.005" value="0.03" />
-            </label>
-            <label>
-              transition (Hz)
-              <input id="highpassTransitionHz" type="number" min="0" step="0.005" value="0.02" />
-            </label>
+            <p>Processing Filter</p>
+            <div class="filter-grid">
+              <label>
+                Processing Order
+                <select id="processingOrder">
+                  <option value="filter_then_baseline" selected>Filtering → Baseline</option>
+                  <option value="baseline_then_filter">Baseline → Filtering</option>
+                </select>
+              </label>
+              <label>
+                Filter Domain
+                <select id="filterDomain">
+                  <option value="time" selected>Time Domain</option>
+                  <option value="frequency">Frequency Domain</option>
+                </select>
+              </label>
+              <label>
+                Baseline Method
+                <select id="baselineMethod">
+                  <option value="poly4" selected>poly4</option>
+                  <option value="poly3">poly3</option>
+                  <option value="poly2">poly2</option>
+                  <option value="mean">mean</option>
+                  <option value="none">none</option>
+                </select>
+              </label>
+              <label>
+                Filter Config
+                <select id="filterConfig">
+                  <option value="bandpass" selected>bandpass</option>
+                  <option value="highpass">highpass</option>
+                  <option value="lowpass">lowpass</option>
+                  <option value="bandstop">bandstop</option>
+                </select>
+              </label>
+              <label>
+                Filter Type
+                <select id="filterType">
+                  <option value="butter" selected>butter</option>
+                  <option value="cheby">cheby</option>
+                  <option value="bessel">bessel</option>
+                </select>
+              </label>
+              <label>
+                F Low (Hz)
+                <input id="fLowHz" type="number" min="0" step="0.01" value="0.1" />
+              </label>
+              <label>
+                F High (Hz)
+                <input id="fHighHz" type="number" min="0" step="0.1" value="25" />
+              </label>
+              <label>
+                Order
+                <input id="filterOrder" type="number" min="1" step="1" value="4" />
+              </label>
+            </div>
           </div>
 
           <div class="action-buttons">
@@ -66,7 +115,7 @@
           </div>
           <div class="status-chip">
             <span>Pair Scan</span>
-            <strong id="pairStats">Pairs: 0 | Missing Y: 0</strong>
+            <strong id="pairStats">Pairs: 0 | Singles: 0 | Missing Y: 0</strong>
           </div>
           <div class="status-chip">
             <span>Candidate Files</span>

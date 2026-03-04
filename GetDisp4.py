@@ -38,6 +38,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Generate alignment markdown+plot report files.",
     )
+    parser.add_argument(
+        "--no-method23",
+        action="store_true",
+        help="Disable Method-2/Method-3 extra export files.",
+    )
+    parser.add_argument(
+        "--no-method2",
+        action="store_true",
+        help="Disable Method-2 per-file output files.",
+    )
+    parser.add_argument(
+        "--no-method3",
+        action="store_true",
+        help="Disable Method-3 aggregate output file.",
+    )
     return parser
 
 
@@ -52,9 +67,15 @@ def main() -> int:
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
         return 2
 
+    method23_enabled = not bool(args.no_method23)
+    method2_enabled = method23_enabled and (not bool(args.no_method2))
+    method3_enabled = method23_enabled and (not bool(args.no_method3))
+
     options = {
         "includeManip": bool(args.include_manip),
         "failFast": bool(args.fail_fast),
+        "method2Enabled": method2_enabled,
+        "method3Enabled": method3_enabled,
     }
 
     summary = process_batch_directory(input_dir, output_dir, options)
@@ -65,7 +86,7 @@ def main() -> int:
     for result in summary["results"]:
         print(f"[OUTPUT] {result['writtenPath']}")
         mode = str(result.get("metrics", {}).get("mode", "pair")).lower()
-        if args.with_report and mode != "single":
+        if args.with_report and mode == "pair":
             try:
                 artifacts = generate_alignment_report(result["writtenPath"])
                 print(f"[REPORT] {artifacts.markdown_path}")
@@ -73,8 +94,8 @@ def main() -> int:
                 print(f"[PLOT] {artifacts.delta_plot_path}")
             except Exception as report_exc:  # noqa: BLE001
                 print(f"[WARN] Report generation failed for {result['writtenPath']}: {report_exc}")
-        elif args.with_report and mode == "single":
-            print(f"[INFO] Skipping alignment report for single-file output: {result['writtenPath']}")
+        elif args.with_report:
+            print(f"[INFO] Skipping alignment report for mode={mode}: {result['writtenPath']}")
 
     if summary["errors"]:
         for err in summary["errors"]:
@@ -90,6 +111,12 @@ def main() -> int:
         f"singles_detected={metrics.get('singlesDetected', 0)} "
         f"singles_processed={metrics.get('singlesProcessed', 0)} "
         f"singles_failed={metrics.get('singlesFailed', 0)} "
+        f"method2_enabled={metrics.get('method2Enabled', False)} "
+        f"method3_enabled={metrics.get('method3Enabled', False)} "
+        f"method2_detected={metrics.get('method2Detected', 0)} "
+        f"method2_processed={metrics.get('method2Processed', 0)} "
+        f"method2_failed={metrics.get('method2Failed', 0)} "
+        f"method3_produced={metrics.get('method3Produced', 0)} "
         f"processed_total={metrics.get('processedTotal', metrics['pairsProcessed'])} "
         f"failed_total={metrics.get('failedTotal', metrics['pairsFailed'])}"
     )

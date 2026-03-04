@@ -105,7 +105,7 @@ h1 {
 
 .control-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 1.35fr) minmax(170px, 0.8fr) minmax(240px, 1fr) minmax(180px, 0.9fr);
+  grid-template-columns: minmax(250px, 1.15fr) minmax(170px, 0.8fr) minmax(360px, 1.65fr) minmax(170px, 0.8fr);
   gap: 12px;
 }
 
@@ -162,7 +162,7 @@ h1 {
   padding: 10px;
   display: grid;
   gap: 8px;
-  align-content: center;
+  align-content: start;
   font-size: 0.8rem;
 }
 
@@ -179,11 +179,14 @@ h1 {
   gap: 5px;
 }
 
-.filter-controls input[type="checkbox"] {
-  justify-self: start;
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
 }
 
-.filter-controls input[type="number"] {
+.filter-controls input[type="number"],
+.filter-controls select {
   width: 100%;
   border: 1px solid rgba(16, 20, 24, 0.25);
   background: rgba(255, 255, 255, 0.78);
@@ -405,6 +408,10 @@ th {
   }
 
   .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -21,7 +21,15 @@ Then open:
   - folder selection (`webkitdirectory`)
   - direct multi-file selection (`.xlsx`)
   - supports both X/Y paired processing and single-file processing
-  - high-pass filter control (`on/off`, `cutoff`, `transition`)
+  - Method-2 export toggle (default on)
+  - Method-3 export toggle (default on)
+  - processing filter controls:
+    - `Processing Order`
+    - `Filter Domain`
+    - `Baseline Method`
+    - `Filter Config`
+    - `Filter Type`
+    - `F Low`, `F High`, `Order`
 - Output sheets per pair:
   - `Strain_Relative`
   - `Legacy_Methods`
@@ -40,3 +48,6 @@ Then open:
   - `Strain_Relative_Time`
   - `TBDY_Total_Time`
   - `InputProxy_Relative_Time`
+- Additional output files:
+  - `output_method2_<record>.xlsx` (per input file)
+  - `output_method3_profiles_all.xlsx` (aggregate X/Y depth profiles)
