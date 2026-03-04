@@ -1908,6 +1908,10 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
 def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     normalized_options = _normalize_options(options)
     base_reference = _normalize_base_reference(normalized_options.get("baseReference", DEFAULT_BASE_REFERENCE))
+    fallback_options: Dict[str, Any] | None = None
+    if base_reference == "deepest_layer":
+        fallback_options = dict(normalized_options)
+        fallback_options["baseReference"] = "input"
     include_manip = bool(normalized_options.get("includeManip", False))
     fail_fast = bool(normalized_options.get("failFast", False))
     method2_enabled = _to_bool(
@@ -1960,6 +1964,10 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     method2_profile_x_frames: List[pd.DataFrame] = []
     method2_profile_y_frames: List[pd.DataFrame] = []
 
+    def _is_deepest_table_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "table index is out of bounds" in text or "table index out of bounds" in text
+
     for x_name, y_name in pairs:
         try:
             result = process_xy_pair(
@@ -1973,6 +1981,26 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             pair_processed += 1
             _log(logs, "info", f"Processed pair: {x_name} + {y_name}")
         except Exception as exc:  # noqa: BLE001
+            if fallback_options is not None and _is_deepest_table_error(exc):
+                try:
+                    result = process_xy_pair(
+                        file_map[x_name],
+                        file_map[y_name],
+                        x_name,
+                        y_name,
+                        fallback_options,
+                    )
+                    results.append(result)
+                    pair_processed += 1
+                    _log(
+                        logs,
+                        "warning",
+                        f"Deepest-layer base failed for pair ({x_name}, {y_name}); fallback to input base reference.",
+                    )
+                    continue
+                except Exception as fallback_exc:  # noqa: BLE001
+                    exc = fallback_exc
+
             pair_failed += 1
             errors.append({"pairKey": f"{x_name}|{y_name}", "reason": str(exc)})
             _log(logs, "error", f"Failed pair {x_name} + {y_name}: {exc}")
@@ -1991,6 +2019,24 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                 single_processed += 1
                 _log(logs, "info", f"Processed single: {name}")
             except Exception as exc:  # noqa: BLE001
+                if fallback_options is not None and _is_deepest_table_error(exc):
+                    try:
+                        result = process_single_file(
+                            file_map[name],
+                            name,
+                            fallback_options,
+                        )
+                        results.append(result)
+                        single_processed += 1
+                        _log(
+                            logs,
+                            "warning",
+                            f"Deepest-layer base failed for single ({name}); fallback to input base reference.",
+                        )
+                        continue
+                    except Exception as fallback_exc:  # noqa: BLE001
+                        exc = fallback_exc
+
                 single_failed += 1
                 errors.append({"pairKey": f"SINGLE|{name}", "reason": str(exc)})
                 _log(logs, "error", f"Failed single {name}: {exc}")
@@ -2024,6 +2070,39 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
                 _log(logs, "info", f"Processed Method-2 basis file: {name}")
             except Exception as exc:  # noqa: BLE001
+                if fallback_options is not None and _is_deepest_table_error(exc):
+                    try:
+                        extracted = _extract_method2_single(
+                            file_map[name],
+                            name,
+                            fallback_options,
+                        )
+                        if extracted.get("skipped", False):
+                            _log(logs, "warning", str(extracted.get("reason", f"Skipped Method-2 file: {name}")))
+                            continue
+
+                        if method2_enabled:
+                            result = extracted["result"]
+                            results.append(result)
+                            method2_processed += 1
+
+                        axis = str(extracted.get("axis", "")).upper()
+                        profile_df = extracted.get("profile_df")
+                        if method3_enabled and isinstance(profile_df, pd.DataFrame) and not profile_df.empty:
+                            if axis == "X":
+                                method2_profile_x_frames.append(profile_df)
+                            elif axis == "Y":
+                                method2_profile_y_frames.append(profile_df)
+
+                        _log(
+                            logs,
+                            "warning",
+                            f"Deepest-layer base failed for Method-2 file ({name}); fallback to input base reference.",
+                        )
+                        continue
+                    except Exception as fallback_exc:  # noqa: BLE001
+                        exc = fallback_exc
+
                 method2_failed += 1
                 errors.append({"pairKey": f"METHOD2|{name}", "reason": str(exc)})
                 _log(logs, "error", f"Failed Method-2 file {name}: {exc}")
