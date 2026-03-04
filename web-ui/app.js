@@ -1,5 +1,6 @@
 const state = {
   workerReady: false,
+  isRunning: false,
   selectedFiles: [],
   results: [],
   errors: [],
@@ -194,9 +195,17 @@ function updateSelectionStats() {
 }
 
 function refreshButtons() {
-  const canRun = state.workerReady && state.selectedFiles.length > 0;
+  const canRun = state.workerReady && !state.isRunning && state.selectedFiles.length > 0;
   dom.runBtn.disabled = !canRun;
-  dom.zipBtn.disabled = !state.workerReady || state.results.length === 0;
+  dom.zipBtn.disabled = state.isRunning || !state.workerReady || state.results.length === 0;
+  if (dom.folderInput) dom.folderInput.disabled = state.isRunning;
+  if (dom.fileInput) dom.fileInput.disabled = state.isRunning;
+  if (dom.includeManip) dom.includeManip.disabled = state.isRunning;
+  if (dom.failFast) dom.failFast.disabled = state.isRunning;
+  if (dom.method2Enabled) dom.method2Enabled.disabled = state.isRunning;
+  if (dom.method3Enabled) dom.method3Enabled.disabled = state.isRunning;
+  if (dom.baselineOn) dom.baselineOn.disabled = state.isRunning;
+  if (dom.filterOn) dom.filterOn.disabled = state.isRunning;
 }
 
 function formatBytes(bytes) {
@@ -288,25 +297,40 @@ function handleSelectionChange(sourceLabel) {
 }
 
 async function runBatch() {
-  if (!state.workerReady || !state.selectedFiles.length) {
+  if (!state.workerReady || !state.selectedFiles.length || state.isRunning) {
     return;
   }
 
+  state.isRunning = true;
   state.results = [];
   state.errors = [];
   state.metrics = null;
   renderResults();
   renderMetrics();
+  refreshButtons();
 
   setStatus("Preparing files...");
   appendLog("info", `Preparing ${state.selectedFiles.length} files`);
 
-  const filesPayload = await Promise.all(
-    state.selectedFiles.map(async (file) => {
-      const bytes = await file.arrayBuffer();
-      return { name: normalizeCandidateName(file.name), bytes };
-    })
-  );
+  const includeManip = !!dom.includeManip?.checked;
+  const selectedCandidates = state.selectedFiles.filter((file) => {
+    const name = normalizeCandidateName(file.name);
+    return isInputCandidate(name, includeManip);
+  });
+
+  const filesPayload = [];
+  for (const file of selectedCandidates) {
+    const bytes = await file.arrayBuffer();
+    filesPayload.push({ name: normalizeCandidateName(file.name), bytes });
+  }
+
+  if (!filesPayload.length) {
+    appendLog("warning", "No valid candidate XLSX files to process.");
+    setStatus("No candidate XLSX files");
+    state.isRunning = false;
+    refreshButtons();
+    return;
+  }
 
   const transferables = filesPayload.map((item) => item.bytes);
 
@@ -341,7 +365,6 @@ async function runBatch() {
     transferables
   );
 
-  dom.runBtn.disabled = true;
   setStatus("Running...");
 }
 
@@ -379,6 +402,7 @@ worker.addEventListener("message", (event) => {
   }
 
   if (type === "runBatchResult") {
+    state.isRunning = false;
     state.results = payload.results || [];
     state.errors = payload.errors || [];
     state.metrics = payload.metrics || null;
@@ -406,6 +430,7 @@ worker.addEventListener("message", (event) => {
   }
 
   if (type === "error") {
+    state.isRunning = false;
     const message = payload?.message || "Unknown worker error";
     setStatus(`Error: ${message}`);
     appendLog("error", message);
@@ -423,6 +448,7 @@ dom.baselineOn.addEventListener("change", syncFilterInputs);
 
 dom.runBtn.addEventListener("click", () => {
   runBatch().catch((error) => {
+    state.isRunning = false;
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Error: ${message}`);
     appendLog("error", message);
