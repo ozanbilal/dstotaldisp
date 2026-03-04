@@ -39,6 +39,24 @@ Tabana gore goreceli deplasman:
 
 `u_rel_base(z_i,t) = sum_{k=i..N} du_k(t)`
 
+### `X_base_rel_max_m` nasil hesaplanir?
+
+Her katman `i` icin su adimlarla uretilir:
+
+1. `Layer i` sheet'inden X yonu strain serisi okunur (`Strain (%)` -> `gamma_i(t)`).
+2. Tum katmanlar icin ortak zaman dizisi kurulur:
+   - ortak pencere: katmanlarin kesisen zaman araligi
+   - `dt`: katman zaman adimlarinin medyanlarindan en kucugu
+   - her katman strain'i bu ortak zamana lineer enterpole edilir
+3. Katman katkisi hesaplanir:
+   - `du_i(t) = gamma_i(t) * h_i`
+4. Taban-referansli kümülatif deplasman bulunur:
+   - `u_rel_base_x(i,t) = sum_{k=i..N} du_k(t)` (en alttan yukariya birikimli toplam)
+5. Son kolon degeri:
+   - `X_base_rel_max_m(i) = max_t |u_rel_base_x(i,t)|`
+
+Yani `X_base_rel_max_m`, her katman icin strain tabanli goreceli deplasman zaman serisinin mutlak maksimum zarfi.
+
 Sonra zarf degerler:
 
 - `X_base_rel_max_m = max_t |u_rel_base_x|`
