@@ -24,3 +24,11 @@ Then open:
   - `Strain_Relative`
   - `Legacy_Methods`
   - `Comparison`
+  - `Depth_Profiles`
+  - `Profile_BaseCorrected`
+  - `Direction_X_Time`
+  - `Direction_Y_Time`
+  - `Resultant_Time`
+  - `TBDY_Total_X_Time`
+  - `TBDY_Total_Y_Time`
+  - `TBDY_Total_Resultant_Time`

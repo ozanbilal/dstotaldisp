@@ -11,7 +11,7 @@ Bu proje, su iki dunyayi ayni cikti setinde birlestirir:
 - TBDY yorumu (toplam): `u_total(z,t) = u(base,t) + u_rel(z,t)`
 
 Not: Mevcut cekirdek, strain tabanli yolakta dogrudan `*_base_rel_*` (base-relative) uretir.
-`u(base)` serisi acikca eklenirse TBDY toplami da kolon olarak uretilir; su an ana workbook'ta odak base-relative karsilastirmadir.
+`u(base)` proxy serisi (`Input Motion` entegrasyonu) ile `u_total = u_base + u_rel` explicit olarak da uretilir.
 
 ## Giris Beklentisi
 
@@ -42,6 +42,9 @@ Sonra zarf degerler:
 - `X_base_rel_max_m = max_t |u_rel_base_x|`
 - `Y_base_rel_max_m = max_t |u_rel_base_y|`
 - `Total_base_rel_max_m = max_t sqrt(u_rel_base_x^2 + u_rel_base_y^2)`
+- `X_tbdy_total_max_m = max_t |u_input_proxy_x + u_rel_base_x|`
+- `Y_tbdy_total_max_m = max_t |u_input_proxy_y + u_rel_base_y|`
+- `Total_tbdy_total_max_m = max_t sqrt((u_input_proxy_x + u_rel_base_x)^2 + (u_input_proxy_y + u_rel_base_y)^2)`
 
 Ayrica input-proxy referansi uretilir:
 
@@ -75,6 +78,9 @@ Asagidaki kolonlar olusur:
 - X/Y hizalama deltasi:
   - `Delta_Xbase_vs_ProfileXminusbottom_m`
   - `Delta_Ybase_vs_ProfileYminusbottom_m`
+- TBDY toplam karsilastirmasi:
+  - `Delta_tbdy_vs_profile_m`
+  - `Ratio_tbdy_to_profile`
 
 ## Baseline Filtering Var mi?
 
@@ -88,7 +94,7 @@ Her X/Y cifti icin 1 workbook uretilir.
 Sheet'ler:
 
 1. `Strain_Relative`
-- Strain tabanli base-relative ve input-proxy-relative max kolonlari
+- Strain tabanli base-relative, TBDY total (`u_base + u_rel`) ve input-proxy-relative max kolonlari
 
 2. `Legacy_Methods`
 - Profile RSS ve ivmeden cikan legacy zaman-gecmis ozetleri
@@ -111,11 +117,21 @@ Sheet'ler:
 8. `Resultant_Time`
 - Tum layerlar icin `sqrt(X^2 + Y^2)` zaman serileri (pozitif)
 
+9. `TBDY_Total_X_Time`
+- Tum layerlar icin `X_total(t) = X_base_proxy(t) + X_relative(t)` serileri
+
+10. `TBDY_Total_Y_Time`
+- Tum layerlar icin `Y_total(t) = Y_base_proxy(t) + Y_relative(t)` serileri
+
+11. `TBDY_Total_Resultant_Time`
+- Tum layerlar icin `sqrt(X_total^2 + Y_total^2)` serileri
+
 ## Workbook Icindeki Grafikler
 
-- `Depth_Profiles`: derinlige bagli 4 profilin tek grafikte karsilastirmasi
+- `Depth_Profiles`: derinlige bagli toplam profillerin tek grafikte karsilastirmasi
 - `Profile_BaseCorrected`: X ve Y icin base-relative vs base-corrected profile grafik ciftleri
 - `Direction_X_Time`, `Direction_Y_Time`, `Resultant_Time`: layer bazli toplu zaman-serisi grafikleri
+- `TBDY_Total_X_Time`, `TBDY_Total_Y_Time`, `TBDY_Total_Resultant_Time`: explicit TBDY total zaman-serisi grafikleri
 - Eksenler ve tick etiketleri acik olarak gosterilecek sekilde konfigure edilir.
 
 ## Opsiyonel Rapor Dosyalari

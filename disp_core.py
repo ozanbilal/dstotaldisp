@@ -276,10 +276,16 @@ def _compute_strain_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, 
 
     u_rel_input_x = u_rel_base_x - u_input_proxy_x[None, :]
     u_rel_input_y = u_rel_base_y - u_input_proxy_y[None, :]
+    u_tbdy_total_x = u_rel_base_x + u_input_proxy_x[None, :]
+    u_tbdy_total_y = u_rel_base_y + u_input_proxy_y[None, :]
 
     x_base = np.max(np.abs(u_rel_base_x), axis=1)
     y_base = np.max(np.abs(u_rel_base_y), axis=1)
     total_base = np.max(np.sqrt(u_rel_base_x**2 + u_rel_base_y**2), axis=1)
+
+    x_tbdy_total = np.max(np.abs(u_tbdy_total_x), axis=1)
+    y_tbdy_total = np.max(np.abs(u_tbdy_total_y), axis=1)
+    total_tbdy_total = np.max(np.sqrt(u_tbdy_total_x**2 + u_tbdy_total_y**2), axis=1)
 
     x_input = np.max(np.abs(u_rel_input_x), axis=1)
     y_input = np.max(np.abs(u_rel_input_y), axis=1)
@@ -293,6 +299,9 @@ def _compute_strain_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, 
             "X_base_rel_max_m": x_base,
             "Y_base_rel_max_m": y_base,
             "Total_base_rel_max_m": total_base,
+            "X_tbdy_total_max_m": x_tbdy_total,
+            "Y_tbdy_total_max_m": y_tbdy_total,
+            "Total_tbdy_total_max_m": total_tbdy_total,
             "X_input_proxy_rel_max_m": x_input,
             "Y_input_proxy_rel_max_m": y_input,
             "Total_input_proxy_rel_max_m": total_input,
@@ -306,8 +315,12 @@ def _compute_strain_bundle(x_xl: pd.ExcelFile, y_xl: pd.ExcelFile) -> Dict[str, 
         "time": time,
         "u_rel_base_x": u_rel_base_x,
         "u_rel_base_y": u_rel_base_y,
+        "u_input_proxy_x": u_input_proxy_x,
+        "u_input_proxy_y": u_input_proxy_y,
         "u_rel_input_x": u_rel_input_x,
         "u_rel_input_y": u_rel_input_y,
+        "u_tbdy_total_x": u_tbdy_total_x,
+        "u_tbdy_total_y": u_tbdy_total_y,
         "summary_df": summary_df,
     }
 
@@ -320,6 +333,20 @@ def compute_strain_relative(
     _ = options
     bundle = _compute_strain_bundle(x_xl, y_xl)
     return bundle["summary_df"].copy()
+
+
+def _build_layer_time_df(
+    time: np.ndarray,
+    depths: np.ndarray,
+    matrix: np.ndarray,
+    value_suffix: str,
+) -> pd.DataFrame:
+    n_layers = min(int(matrix.shape[0]), int(depths.size))
+    data: Dict[str, np.ndarray] = {"Time_s": time}
+    for i in range(n_layers):
+        depth = float(depths[i])
+        data[f"L{i + 1:02d}_z{depth:.3f}m_{value_suffix}"] = matrix[i]
+    return pd.DataFrame(data)
 
 
 def _compute_single_direction_disp_bundle(
@@ -362,10 +389,7 @@ def _compute_single_direction_disp_bundle(
     for i, (t, d) in enumerate(payload):
         disp_matrix[i, :] = np.interp(common_time, t, d)
 
-    data: Dict[str, np.ndarray] = {"Time_s": common_time}
-    for i in range(n_layers):
-        data[f"L{i + 1:02d}_z{depths[i]:.3f}m_disp_m"] = disp_matrix[i]
-    table_df = pd.DataFrame(data)
+    table_df = _build_layer_time_df(common_time, depths, disp_matrix, "disp_m")
 
     return {
         "axis": axis_label,
@@ -475,6 +499,7 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
             "X_base_rel_max_m",
             "Y_base_rel_max_m",
             "Total_base_rel_max_m",
+            "Total_tbdy_total_max_m",
             "Total_input_proxy_rel_max_m",
         ]
     ].merge(
@@ -507,6 +532,7 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
     )
 
     merged["Delta_base_vs_profile_m"] = merged["Total_base_rel_max_m"] - merged["Profile_RSS_total_m"]
+    merged["Delta_tbdy_vs_profile_m"] = merged["Total_tbdy_total_max_m"] - merged["Profile_RSS_total_m"]
     merged["Delta_base_vs_timehist_m"] = merged["Total_base_rel_max_m"] - merged["TimeHist_Resultant_total_m"]
     merged["Delta_inputproxy_vs_profile_m"] = (
         merged["Total_input_proxy_rel_max_m"] - merged["Profile_RSS_total_m"]
@@ -516,6 +542,11 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
         merged["Ratio_base_to_profile"] = np.where(
             merged["Profile_RSS_total_m"] != 0,
             merged["Total_base_rel_max_m"] / merged["Profile_RSS_total_m"],
+            np.nan,
+        )
+        merged["Ratio_tbdy_to_profile"] = np.where(
+            merged["Profile_RSS_total_m"] != 0,
+            merged["Total_tbdy_total_max_m"] / merged["Profile_RSS_total_m"],
             np.nan,
         )
         merged["Ratio_base_to_timehist"] = np.where(
@@ -533,6 +564,7 @@ def _build_depth_profiles_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
             "Layer_Index",
             "Depth_m",
             "Total_base_rel_max_m",
+            "Total_tbdy_total_max_m",
             "Total_input_proxy_rel_max_m",
             "Profile_RSS_total_m",
             "TimeHist_Resultant_total_m",
@@ -600,7 +632,7 @@ def _add_depth_profile_chart(worksheet, n_rows: int) -> None:
     _configure_chart_axes(chart)
 
     y_values = Reference(worksheet, min_col=2, min_row=2, max_row=n_rows + 1)
-    for col in (3, 4, 5, 6):
+    for col in range(3, worksheet.max_column + 1):
         x_values = Reference(worksheet, min_col=col, min_row=2, max_row=n_rows + 1)
         series = Series(x_values, y_values, title=worksheet.cell(row=1, column=col).value)
         chart.series.append(series)
@@ -679,6 +711,9 @@ def build_output_workbook(
     x_time_df: pd.DataFrame | None = None,
     y_time_df: pd.DataFrame | None = None,
     resultant_time_df: pd.DataFrame | None = None,
+    tbdy_total_x_time_df: pd.DataFrame | None = None,
+    tbdy_total_y_time_df: pd.DataFrame | None = None,
+    tbdy_total_resultant_time_df: pd.DataFrame | None = None,
 ) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -698,6 +733,12 @@ def build_output_workbook(
             y_time_df.to_excel(writer, sheet_name="Direction_Y_Time", index=False)
         if resultant_time_df is not None and not resultant_time_df.empty:
             resultant_time_df.to_excel(writer, sheet_name="Resultant_Time", index=False)
+        if tbdy_total_x_time_df is not None and not tbdy_total_x_time_df.empty:
+            tbdy_total_x_time_df.to_excel(writer, sheet_name="TBDY_Total_X_Time", index=False)
+        if tbdy_total_y_time_df is not None and not tbdy_total_y_time_df.empty:
+            tbdy_total_y_time_df.to_excel(writer, sheet_name="TBDY_Total_Y_Time", index=False)
+        if tbdy_total_resultant_time_df is not None and not tbdy_total_resultant_time_df.empty:
+            tbdy_total_resultant_time_df.to_excel(writer, sheet_name="TBDY_Total_Resultant_Time", index=False)
 
         workbook = writer.book
 
@@ -736,6 +777,33 @@ def build_output_workbook(
                 "Resultant: All Layers Displacement-Time",
             )
 
+        if "TBDY_Total_X_Time" in writer.sheets:
+            ws_tx = writer.sheets["TBDY_Total_X_Time"]
+            _add_all_layers_chart(
+                ws_tx,
+                ws_tx.max_row - 1,
+                ws_tx.max_column - 1,
+                "TBDY Total X: u(base)+u(rel)",
+            )
+
+        if "TBDY_Total_Y_Time" in writer.sheets:
+            ws_ty = writer.sheets["TBDY_Total_Y_Time"]
+            _add_all_layers_chart(
+                ws_ty,
+                ws_ty.max_row - 1,
+                ws_ty.max_column - 1,
+                "TBDY Total Y: u(base)+u(rel)",
+            )
+
+        if "TBDY_Total_Resultant_Time" in writer.sheets:
+            ws_tr = writer.sheets["TBDY_Total_Resultant_Time"]
+            _add_all_layers_chart(
+                ws_tr,
+                ws_tr.max_row - 1,
+                ws_tr.max_column - 1,
+                "TBDY Total Resultant: All Layers",
+            )
+
         _ = workbook
 
     return buffer.getvalue()
@@ -769,6 +837,27 @@ def process_xy_pair(
         legacy_df = legacy_bundle["summary_df"].copy()
         comparison_df = _build_comparison_df(strain_df, legacy_df)
         resultant_time_df = _build_resultant_time_df(x_direction_bundle, y_direction_bundle)
+        tbdy_total_x_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            strain_bundle["u_tbdy_total_x"],
+            "tbdy_total_x_m",
+        )
+        tbdy_total_y_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            strain_bundle["u_tbdy_total_y"],
+            "tbdy_total_y_m",
+        )
+        tbdy_total_resultant_matrix = np.sqrt(
+            strain_bundle["u_tbdy_total_x"] ** 2 + strain_bundle["u_tbdy_total_y"] ** 2
+        )
+        tbdy_total_resultant_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            tbdy_total_resultant_matrix,
+            "tbdy_total_resultant_m",
+        )
 
     output_bytes = build_output_workbook(
         strain_df,
@@ -777,6 +866,9 @@ def process_xy_pair(
         x_time_df=x_direction_bundle["table_df"],
         y_time_df=y_direction_bundle["table_df"],
         resultant_time_df=resultant_time_df,
+        tbdy_total_x_time_df=tbdy_total_x_time_df,
+        tbdy_total_y_time_df=tbdy_total_y_time_df,
+        tbdy_total_resultant_time_df=tbdy_total_resultant_time_df,
     )
     output_file_name = f"output_total_{Path(x_name).stem}.xlsx"
 
@@ -788,9 +880,17 @@ def process_xy_pair(
         "outputBytes": output_bytes,
         "metrics": {
             "layerCount": int(len(strain_df)),
-            "timeSeriesSheets": 3,
-            "timeSheets": ["Direction_X_Time", "Direction_Y_Time", "Resultant_Time"],
+            "timeSeriesSheets": 6,
+            "timeSheets": [
+                "Direction_X_Time",
+                "Direction_Y_Time",
+                "Resultant_Time",
+                "TBDY_Total_X_Time",
+                "TBDY_Total_Y_Time",
+                "TBDY_Total_Resultant_Time",
+            ],
             "surfaceBaseTotal_m": float(strain_df["Total_base_rel_max_m"].iloc[0]),
+            "surfaceTBDYTotal_m": float(strain_df["Total_tbdy_total_max_m"].iloc[0]),
             "surfaceProfileRSS_m": float(legacy_df["Profile_RSS_total_m"].iloc[0]),
         },
     }
