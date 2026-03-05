@@ -66,6 +66,14 @@ Sonra zarf degerler:
 - `Y_tbdy_total_max_m = max_t |u_base_ref_y + u_rel_base_y|`
 - `Total_tbdy_total_max_m = max_t sqrt((u_base_ref_x + u_rel_base_x)^2 + (u_base_ref_y + u_rel_base_y)^2)`
 
+Ek olarak DEEPSOIL `Profile` taban ofsetine hizali bir tahmin seti yazilir:
+
+- `X_profile_offset_total_est_m = (X_base_rel_max_m - X_base_rel_max_m(bottom)) + Profile_X_max_m(bottom)`
+- `Y_profile_offset_total_est_m = (Y_base_rel_max_m - Y_base_rel_max_m(bottom)) + Profile_Y_max_m(bottom)`
+- `Total_profile_offset_total_est_m = sqrt(X_profile_offset_total_est_m^2 + Y_profile_offset_total_est_m^2)`
+
+Bu kolonlarin alt satiri DEEPSOIL profile taban degerine esit olur (ornegin ~`0.0145 m`).
+
 `u_base_ref` secimi opsiyoneldir:
 
 - `input` (varsayilan): `Input Motion` ivmesinin entegrasyonundan gelen proxy
@@ -106,6 +114,9 @@ Asagidaki kolonlar olusur:
 - TBDY toplam karsilastirmasi:
   - `Delta_tbdy_vs_profile_m`
   - `Ratio_tbdy_to_profile`
+- Profile-bottom-ofset tahmin karsilastirmasi (varsa):
+  - `Delta_profileoffset_vs_profile_m`
+  - `Ratio_profileoffset_to_profile`
 
 ## Baseline Filtering Var mi?
 
@@ -115,6 +126,10 @@ Evet.
 - Geriye uyumlu modda (legacy high-pass alanlari verilirse): 3. derece baseline + yumusak FFT high-pass (`cutoff=0.03 Hz`, `transition=0.02 Hz`) kullanilir.
 - Yeni gelismis modda: `Processing Order`, `Baseline Method`, `Filter Domain`, `Filter Config`, `Filter Type`, `F Low`, `F High`, `Order` parametreleriyle akis ayarlanir.
 - Integrasyon her durumda `_cumtrapz` ile yapilir.
+- Opsiyonel karsilastirma modunda (`integrationCompareEnabled=true`) ayni on-islenmis ivmeden ikinci bir alternatif uretilir:
+  - `fft_regularized` (frekans alaninda `U(f) = -A(f) * H_hp(f) / (2*pi*f)^2`)
+  - alt low-cut kurali: filtering aciksa `F Low`, kapaliysa `0.05 Hz`
+  - primary korunur, alt ve `ALT - primary` farklari ek kolon/sheet olarak yazilir.
 
 ## Uretilen Workbook (Pair Modu, output_total_*.xlsx)
 
@@ -154,6 +169,15 @@ Sheet'ler:
 11. `TBDY_Total_Resultant_Time`
 - Tum layerlar icin `sqrt(X_total^2 + Y_total^2)` serileri
 
+Compare aciksa ek sheet'ler:
+
+- `Direction_X_Time_ALT`
+- `Direction_Y_Time_ALT`
+- `Resultant_Time_ALT`
+- `TBDY_Total_X_Time_ALT`
+- `TBDY_Total_Y_Time_ALT`
+- `TBDY_Total_Resultant_Time_ALT`
+
 ## Uretilen Workbook (Single-File Modu, output_single_*.xlsx)
 
 Eger dosya X/Y ciftine eslesmiyorsa tek basina islenir ve su sheet'ler uretilir:
@@ -173,6 +197,13 @@ Eger dosya X/Y ciftine eslesmiyorsa tek basina islenir ve su sheet'ler uretilir:
 5. `InputProxy_Relative_Time`
 - `u_rel - u_input_proxy` signed zaman serileri
 
+Compare aciksa ek sheet'ler:
+
+- `Direction_Time_ALT`
+- `Strain_Relative_Time_ALT`
+- `TBDY_Total_Time_ALT`
+- `InputProxy_Relative_Time_ALT`
+
 ## Method-2 Ek Ciktisi (Dosya Bazli, output_method2_*.xlsx)
 
 Her uygun giris `.xlsx` dosyasi icin ayri uretilir.
@@ -182,6 +213,11 @@ Her uygun giris `.xlsx` dosyasi icin ayri uretilir.
 - Ilk sutun: `Time_s`
 - Diger sutunlar: katman bazli TBDY toplam deplasman zaman serileri (`u_base + u_rel`)
 
+Compare aciksa ayni dosyada ek sheet:
+
+- `Method2_TBDY_X_Time_ALT` / `Method2_TBDY_Y_Time_ALT`
+- `Method2_TBDY_X_Delta` / `Method2_TBDY_Y_Delta` (`ALT - primary`)
+
 ## Method-3 Ek Ciktisi (Toplu, output_method3_profiles_all.xlsx)
 
 Tek bir toplu dosyada tum kayitlarin katman bazli maksimum profil degerleri verilir.
@@ -189,6 +225,13 @@ Tek bir toplu dosyada tum kayitlarin katman bazli maksimum profil degerleri veri
 - `Method3_Profile_X`: `Depth_m` + her X kayit icin `max(|u(t)|)` kolonu
 - `Method3_Profile_Y`: `Depth_m` + her Y kayit icin `max(|u(t)|)` kolonu
 - Derinlikler dis birlestirme (`outer`) ile hizalanir.
+
+Compare aciksa ek sheet:
+
+- `Method3_Profile_X_ALT`
+- `Method3_Profile_Y_ALT`
+- `Method3_Delta_X` (`ALT - primary`)
+- `Method3_Delta_Y` (`ALT - primary`)
 
 Method-3, dosya bazinda su seriden uretilir:
 
@@ -219,7 +262,9 @@ X ile Y grafigini capraz karsilastirmak (or. `TBDY Total X` vs `Direction Y`) do
 
 ## Workbook Icindeki Grafikler
 
-- `Depth_Profiles`: derinlige bagli toplam profillerin tek grafikte karsilastirmasi
+- `Depth_Profiles`: derinlige bagli profil karsilastirmasi
+  - `Direction_X_*` / `Direction_Y_*` signed `(+max, -min)` ve varsa `_ALT (+max, -min)` kolonlari
+  - resultants toplami (`sqrt(x^2+y^2)`) CLI/UI opsiyonu ile acilip kapanabilir
 - `Profile_BaseCorrected`: X ve Y icin base-relative vs base-corrected profile grafik ciftleri
 - `Direction_X_Time`, `Direction_Y_Time`, `Resultant_Time`: layer bazli toplu zaman-serisi grafikleri
 - `TBDY_Total_X_Time`, `TBDY_Total_Y_Time`, `TBDY_Total_Resultant_Time`: explicit TBDY total zaman-serisi grafikleri
@@ -256,6 +301,9 @@ Opsiyonlar:
 - `--baseline-on`: baseline duzeltmeyi ac
 - `--filter-on`: filtering'i ac
 - `--base-reference {input,deepest_layer}`: TBDY total icin base deplasman referansi secimi
+- `--integration-compare`: FFT-regularized alt entegrasyon karsilastirmasini ac
+- `--hide-resultant-profiles`: `Depth_Profiles` sheet/chart icinde resultant/toplam serileri gizle
+- `--alt-integration-method {fft_regularized}`: alt entegrasyon yontemi (su an tek secenek)
 
 Ornek:
 
@@ -279,6 +327,8 @@ UI ozellikleri:
 - Folder select (`webkitdirectory`) + direkt dosya secimi
 - Secilen dosya listesi ve pair sayaci
 - `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir
+- `Compare with FFT-Regularized integration` (varsayilan kapali)
+- `Include resultant (RSS) totals in Depth_Profiles` (varsayilan kapali)
 - Processing paneli:
   - `Apply Baseline` (default kapali)
   - `Apply Filtering` (default kapali)

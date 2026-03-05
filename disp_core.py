@@ -35,6 +35,9 @@ DEFAULT_FILTER_HIGH_HZ = 25.0
 DEFAULT_FILTER_ORDER = 4
 DEFAULT_BASELINE_DEGREE = 4
 DEFAULT_BASE_REFERENCE = "input"
+DEFAULT_ALT_INTEGRATION_METHOD = "fft_regularized"
+DEFAULT_ALT_LOWCUT_HZ = 0.05
+ALT_LOWCUT_POLICY = "from_filter_or_default_0p05"
 
 
 def _log(logs: List[Dict[str, str]], level: str, message: str) -> None:
@@ -435,19 +438,32 @@ def _processing_summary_text(options: Mapping[str, Any] | None) -> str:
     )
 
 
-def _acc_to_disp(
-    time: np.ndarray,
-    acc_g: np.ndarray,
+def _normalize_alt_integration_method(value: Any) -> str:
+    method = str(value or DEFAULT_ALT_INTEGRATION_METHOD).strip().lower()
+    if method in {"fft_regularized", "fft-regularized", "fft"}:
+        return "fft_regularized"
+    return DEFAULT_ALT_INTEGRATION_METHOD
+
+
+def _integration_compare_config(options: Mapping[str, Any] | None) -> Dict[str, Any]:
+    cfg = options or {}
+    enabled = _to_bool(cfg.get("integrationCompareEnabled", False), False)
+    method = _normalize_alt_integration_method(cfg.get("altIntegrationMethod", DEFAULT_ALT_INTEGRATION_METHOD))
+    return {
+        "enabled": bool(enabled),
+        "method": method,
+    }
+
+
+def _preprocess_acc_for_integration(
+    t: np.ndarray,
+    acc: np.ndarray,
+    cfg: Mapping[str, Any],
     *,
-    options: Mapping[str, Any] | None = None,
     highpass_enabled: bool = True,
     highpass_cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
     highpass_transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
 ) -> np.ndarray:
-    t = time.astype(float)
-    acc = acc_g.astype(float)
-    cfg = _processing_config(options)
-
     if cfg.get("legacy", True):
         hp_enabled = bool(cfg.get("highpass_enabled", highpass_enabled))
         hp_cutoff = float(cfg.get("highpass_cutoff_hz", highpass_cutoff_hz))
@@ -455,17 +471,13 @@ def _acc_to_disp(
 
         acc_corr = _baseline_correct_legacy(acc, t)
         if hp_enabled:
-            acc_proc = _soft_highpass_fft(
+            return _soft_highpass_fft(
                 acc_corr,
                 t,
                 cutoff_hz=hp_cutoff,
                 transition_hz=hp_transition,
             )
-        else:
-            acc_proc = acc_corr
-
-        vel = _cumtrapz(acc_proc * 9.81, t)
-        return _cumtrapz(vel, t)
+        return acc_corr
 
     acc_proc = acc.copy()
     if cfg["processing_order"] == "baseline_then_filter":
@@ -498,16 +510,152 @@ def _acc_to_disp(
                 )
         if cfg["baseline_on"]:
             acc_proc = _apply_baseline(acc_proc, cfg["baseline_method"], cfg["baseline_degree"])
+    return acc_proc
 
+
+def _integrate_primary_disp(t: np.ndarray, acc_proc: np.ndarray, cfg: Mapping[str, Any]) -> np.ndarray:
     vel = _cumtrapz(acc_proc * 9.81, t)
-    if cfg["baseline_on"]:
+    if not cfg.get("legacy", True) and cfg.get("baseline_on", False):
         vel = vel - np.mean(vel)
 
     disp = _cumtrapz(vel, t)
-    if cfg["baseline_on"]:
+    if not cfg.get("legacy", True) and cfg.get("baseline_on", False):
         disp = _detrend_poly(disp, degree=1)
-
     return disp
+
+
+def _resolve_alt_lowcut_hz(processing_cfg: Mapping[str, Any], options: Mapping[str, Any] | None) -> float:
+    _ = options
+    if processing_cfg.get("legacy", True):
+        if bool(processing_cfg.get("highpass_enabled", True)):
+            value = float(processing_cfg.get("highpass_cutoff_hz", DEFAULT_ALT_LOWCUT_HZ))
+        else:
+            value = DEFAULT_ALT_LOWCUT_HZ
+    else:
+        if bool(processing_cfg.get("filter_on", False)):
+            value = float(processing_cfg.get("f_low_hz", DEFAULT_ALT_LOWCUT_HZ))
+        else:
+            value = DEFAULT_ALT_LOWCUT_HZ
+    return max(1e-4, value)
+
+
+def _fft_regularized_disp(
+    time: np.ndarray,
+    acc_proc_g: np.ndarray,
+    options: Mapping[str, Any] | None,
+    processing_cfg: Mapping[str, Any],
+) -> Tuple[np.ndarray, float]:
+    t = time.astype(float)
+    acc = acc_proc_g.astype(float)
+
+    if t.size == 0:
+        return np.array([], dtype=float), _resolve_alt_lowcut_hz(processing_cfg, options)
+    if t.size == 1:
+        return np.array([0.0], dtype=float), _resolve_alt_lowcut_hz(processing_cfg, options)
+
+    dt = float(np.median(np.diff(t)))
+    if not np.isfinite(dt) or dt <= 0:
+        return _integrate_primary_disp(t, acc, processing_cfg), _resolve_alt_lowcut_hz(processing_cfg, options)
+
+    n = acc.size
+    if n < 8:
+        disp = _integrate_primary_disp(t, acc, processing_cfg)
+        disp = disp - np.mean(disp)
+        disp = _detrend_poly(disp, degree=1)
+        return disp, _resolve_alt_lowcut_hz(processing_cfg, options)
+
+    nyquist = 0.5 / dt
+    lowcut_raw = _resolve_alt_lowcut_hz(processing_cfg, options)
+    lowcut = float(np.clip(lowcut_raw, 1e-4, max(1e-4, nyquist * 0.999)))
+
+    if processing_cfg.get("legacy", True):
+        transition = float(processing_cfg.get("highpass_transition_hz", DEFAULT_HIGHPASS_TRANSITION_HZ))
+    else:
+        transition = float(processing_cfg.get("transition_hz", DEFAULT_HIGHPASS_TRANSITION_HZ))
+    transition = max(1e-9, transition)
+
+    acc_ms2 = acc * 9.81
+    spectrum = np.fft.rfft(acc_ms2)
+    freqs = np.fft.rfftfreq(n, d=dt)
+    omega = 2.0 * np.pi * freqs
+
+    hp = _build_highpass_transfer(freqs, lowcut, transition)
+    disp_spec = np.zeros_like(spectrum, dtype=np.complex128)
+    nz = omega > 0.0
+    disp_spec[nz] = -spectrum[nz] * hp[nz] / (omega[nz] ** 2)
+    disp = np.fft.irfft(disp_spec, n=n).astype(float)
+
+    # Keep small post-correction to suppress residual DC/linear drift.
+    disp = disp - np.mean(disp)
+    disp = _detrend_poly(disp, degree=1)
+    return disp, lowcut
+
+
+def _acc_to_disp_dual(
+    time: np.ndarray,
+    acc_g: np.ndarray,
+    *,
+    options: Mapping[str, Any] | None = None,
+    highpass_enabled: bool = True,
+    highpass_cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
+    highpass_transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
+) -> Dict[str, Any]:
+    t = time.astype(float)
+    acc = acc_g.astype(float)
+    processing_cfg = _processing_config(options)
+    compare_cfg = _integration_compare_config(options)
+
+    acc_proc = _preprocess_acc_for_integration(
+        t,
+        acc,
+        processing_cfg,
+        highpass_enabled=highpass_enabled,
+        highpass_cutoff_hz=highpass_cutoff_hz,
+        highpass_transition_hz=highpass_transition_hz,
+    )
+    primary = _integrate_primary_disp(t, acc_proc, processing_cfg)
+
+    meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": bool(compare_cfg["enabled"]),
+    }
+    alt: np.ndarray | None = None
+    if compare_cfg["enabled"] and compare_cfg["method"] == "fft_regularized":
+        alt, lowcut = _fft_regularized_disp(t, acc_proc, options, processing_cfg)
+        meta.update(
+            {
+                "altIntegrationMethod": "fft_regularized",
+                "altLowCutHz": float(lowcut),
+                "altLowCutPolicy": ALT_LOWCUT_POLICY,
+            }
+        )
+
+    return {
+        "primary": primary,
+        "alt": alt,
+        "acc_processed_g": acc_proc,
+        "processing_cfg": processing_cfg,
+        "meta": meta,
+    }
+
+
+def _acc_to_disp(
+    time: np.ndarray,
+    acc_g: np.ndarray,
+    *,
+    options: Mapping[str, Any] | None = None,
+    highpass_enabled: bool = True,
+    highpass_cutoff_hz: float = DEFAULT_HIGHPASS_CUTOFF_HZ,
+    highpass_transition_hz: float = DEFAULT_HIGHPASS_TRANSITION_HZ,
+) -> np.ndarray:
+    return _acc_to_disp_dual(
+        time,
+        acc_g,
+        options=options,
+        highpass_enabled=highpass_enabled,
+        highpass_cutoff_hz=highpass_cutoff_hz,
+        highpass_transition_hz=highpass_transition_hz,
+    )["primary"]
 
 
 def _normalize_options(options: Any) -> Dict[str, Any]:
@@ -547,6 +695,11 @@ def _normalize_base_reference(value: Any) -> str:
     if ref in {"deepest", "deep", "deepest_layer", "deepest-layer", "rock", "bedrock"}:
         return "deepest_layer"
     return "input"
+
+
+def _include_resultant_profiles(options: Mapping[str, Any] | None) -> bool:
+    cfg = options or {}
+    return _to_bool(cfg.get("includeResultantProfiles", True), True)
 
 
 def _highpass_config(options: Mapping[str, Any] | None) -> Tuple[bool, float, float]:
@@ -687,6 +840,14 @@ def _parse_profile_displacement_max(xl: pd.ExcelFile) -> Tuple[np.ndarray, np.nd
     return depths[:n], max_disp[:n]
 
 
+def _profile_bottom_max_disp(xl: pd.ExcelFile, target_depth: float) -> float:
+    depths, max_disp = _parse_profile_displacement_max(xl)
+    if depths.size == 0 or max_disp.size == 0:
+        return float("nan")
+    idx = int(np.argmin(np.abs(depths - float(target_depth))))
+    return float(max_disp[idx])
+
+
 def _read_input_motion(xl: pd.ExcelFile) -> Tuple[np.ndarray, np.ndarray]:
     if "Input Motion" not in xl.sheet_names:
         raise ValueError("Missing 'Input Motion' sheet.")
@@ -775,64 +936,160 @@ def _compute_strain_bundle(
     a_input_x_i = np.interp(time, t_input_x, a_input_x)
     a_input_y_i = np.interp(time, t_input_y, a_input_y)
 
-    u_input_proxy_x = _acc_to_disp(
+    compare_cfg = _integration_compare_config(options)
+    integration_meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": bool(compare_cfg["enabled"]),
+    }
+
+    input_x_dual = _acc_to_disp_dual(
         time,
         a_input_x_i,
         options=options,
     )
-    u_input_proxy_y = _acc_to_disp(
+    input_y_dual = _acc_to_disp_dual(
         time,
         a_input_y_i,
         options=options,
     )
+    u_input_proxy_x = input_x_dual["primary"]
+    u_input_proxy_y = input_y_dual["primary"]
+    u_input_proxy_x_alt = input_x_dual.get("alt")
+    u_input_proxy_y_alt = input_y_dual.get("alt")
+
+    for candidate in (input_x_dual.get("meta"), input_y_dual.get("meta")):
+        if isinstance(candidate, dict) and candidate.get("integrationCompareEnabled", False):
+            integration_meta.update(candidate)
 
     base_reference = _normalize_base_reference((options or {}).get("baseReference", DEFAULT_BASE_REFERENCE))
+    u_base_ref_x_alt: np.ndarray | None = None
+    u_base_ref_y_alt: np.ndarray | None = None
     if base_reference == "deepest_layer":
         deepest_layer = layer_names[-1]
         t_deep_x, a_deep_x = _read_layer_column(x_xl, deepest_layer, "Acceleration (g)")
         t_deep_y, a_deep_y = _read_layer_column(y_xl, deepest_layer, "Acceleration (g)")
-        u_deep_x = _acc_to_disp(t_deep_x, a_deep_x, options=options)
-        u_deep_y = _acc_to_disp(t_deep_y, a_deep_y, options=options)
+        deep_x_dual = _acc_to_disp_dual(t_deep_x, a_deep_x, options=options)
+        deep_y_dual = _acc_to_disp_dual(t_deep_y, a_deep_y, options=options)
+        u_deep_x = deep_x_dual["primary"]
+        u_deep_y = deep_y_dual["primary"]
+        u_deep_x_alt = deep_x_dual.get("alt")
+        u_deep_y_alt = deep_y_dual.get("alt")
         u_base_ref_x = np.interp(time, t_deep_x, u_deep_x)
         u_base_ref_y = np.interp(time, t_deep_y, u_deep_y)
+        if u_deep_x_alt is not None:
+            u_base_ref_x_alt = np.interp(time, t_deep_x, u_deep_x_alt)
+        if u_deep_y_alt is not None:
+            u_base_ref_y_alt = np.interp(time, t_deep_y, u_deep_y_alt)
+        for candidate in (deep_x_dual.get("meta"), deep_y_dual.get("meta")):
+            if isinstance(candidate, dict) and candidate.get("integrationCompareEnabled", False):
+                integration_meta.update(candidate)
     else:
         u_base_ref_x = u_input_proxy_x
         u_base_ref_y = u_input_proxy_y
+        if u_input_proxy_x_alt is not None:
+            u_base_ref_x_alt = u_input_proxy_x_alt.copy()
+        if u_input_proxy_y_alt is not None:
+            u_base_ref_y_alt = u_input_proxy_y_alt.copy()
 
     u_rel_input_x = u_rel_base_x - u_input_proxy_x[None, :]
     u_rel_input_y = u_rel_base_y - u_input_proxy_y[None, :]
     u_tbdy_total_x = u_rel_base_x + u_base_ref_x[None, :]
     u_tbdy_total_y = u_rel_base_y + u_base_ref_y[None, :]
 
+    u_rel_input_x_alt: np.ndarray | None = None
+    u_rel_input_y_alt: np.ndarray | None = None
+    u_tbdy_total_x_alt: np.ndarray | None = None
+    u_tbdy_total_y_alt: np.ndarray | None = None
+    if u_input_proxy_x_alt is not None and u_input_proxy_y_alt is not None:
+        u_rel_input_x_alt = u_rel_base_x - u_input_proxy_x_alt[None, :]
+        u_rel_input_y_alt = u_rel_base_y - u_input_proxy_y_alt[None, :]
+    if u_base_ref_x_alt is not None and u_base_ref_y_alt is not None:
+        u_tbdy_total_x_alt = u_rel_base_x + u_base_ref_x_alt[None, :]
+        u_tbdy_total_y_alt = u_rel_base_y + u_base_ref_y_alt[None, :]
+
     x_base = np.max(np.abs(u_rel_base_x), axis=1)
     y_base = np.max(np.abs(u_rel_base_y), axis=1)
+    x_base_pos = np.max(u_rel_base_x, axis=1)
+    x_base_neg = np.min(u_rel_base_x, axis=1)
+    y_base_pos = np.max(u_rel_base_y, axis=1)
+    y_base_neg = np.min(u_rel_base_y, axis=1)
     total_base = np.max(np.sqrt(u_rel_base_x**2 + u_rel_base_y**2), axis=1)
 
     x_tbdy_total = np.max(np.abs(u_tbdy_total_x), axis=1)
     y_tbdy_total = np.max(np.abs(u_tbdy_total_y), axis=1)
+    x_tbdy_total_pos = np.max(u_tbdy_total_x, axis=1)
+    x_tbdy_total_neg = np.min(u_tbdy_total_x, axis=1)
+    y_tbdy_total_pos = np.max(u_tbdy_total_y, axis=1)
+    y_tbdy_total_neg = np.min(u_tbdy_total_y, axis=1)
     total_tbdy_total = np.max(np.sqrt(u_tbdy_total_x**2 + u_tbdy_total_y**2), axis=1)
 
     x_input = np.max(np.abs(u_rel_input_x), axis=1)
     y_input = np.max(np.abs(u_rel_input_y), axis=1)
     total_input = np.max(np.sqrt(u_rel_input_x**2 + u_rel_input_y**2), axis=1)
 
-    summary_df = pd.DataFrame(
-        {
-            "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
-            "Depth_m": depths,
-            "Thickness_m": thickness,
-            "X_base_rel_max_m": x_base,
-            "Y_base_rel_max_m": y_base,
-            "Total_base_rel_max_m": total_base,
-            "X_tbdy_total_max_m": x_tbdy_total,
-            "Y_tbdy_total_max_m": y_tbdy_total,
-            "Total_tbdy_total_max_m": total_tbdy_total,
-            "X_input_proxy_rel_max_m": x_input,
-            "Y_input_proxy_rel_max_m": y_input,
-            "Total_input_proxy_rel_max_m": total_input,
-            "Base_Reference": [base_reference] * n_layers,
-        }
-    )
+    x_profile_offset_total = np.full(n_layers, np.nan, dtype=float)
+    y_profile_offset_total = np.full(n_layers, np.nan, dtype=float)
+    total_profile_offset_total = np.full(n_layers, np.nan, dtype=float)
+    try:
+        x_profile_bottom = _profile_bottom_max_disp(x_xl, depths[-1])
+        y_profile_bottom = _profile_bottom_max_disp(y_xl, depths[-1])
+        x_profile_offset_total = (x_base - x_base[-1]) + x_profile_bottom
+        y_profile_offset_total = (y_base - y_base[-1]) + y_profile_bottom
+        total_profile_offset_total = np.sqrt(x_profile_offset_total**2 + y_profile_offset_total**2)
+    except Exception:
+        pass
+
+    summary_data: Dict[str, Any] = {
+        "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
+        "Depth_m": depths,
+        "Thickness_m": thickness,
+        "X_base_rel_max_m": x_base,
+        "Y_base_rel_max_m": y_base,
+        "X_base_rel_pos_max_m": x_base_pos,
+        "X_base_rel_neg_min_m": x_base_neg,
+        "Y_base_rel_pos_max_m": y_base_pos,
+        "Y_base_rel_neg_min_m": y_base_neg,
+        "Total_base_rel_max_m": total_base,
+        "X_tbdy_total_max_m": x_tbdy_total,
+        "Y_tbdy_total_max_m": y_tbdy_total,
+        "X_tbdy_total_pos_max_m": x_tbdy_total_pos,
+        "X_tbdy_total_neg_min_m": x_tbdy_total_neg,
+        "Y_tbdy_total_pos_max_m": y_tbdy_total_pos,
+        "Y_tbdy_total_neg_min_m": y_tbdy_total_neg,
+        "Total_tbdy_total_max_m": total_tbdy_total,
+        "X_profile_offset_total_est_m": x_profile_offset_total,
+        "Y_profile_offset_total_est_m": y_profile_offset_total,
+        "Total_profile_offset_total_est_m": total_profile_offset_total,
+        "X_input_proxy_rel_max_m": x_input,
+        "Y_input_proxy_rel_max_m": y_input,
+        "Total_input_proxy_rel_max_m": total_input,
+        "Base_Reference": [base_reference] * n_layers,
+    }
+
+    if u_tbdy_total_x_alt is not None and u_tbdy_total_y_alt is not None:
+        x_tbdy_total_alt = np.max(np.abs(u_tbdy_total_x_alt), axis=1)
+        y_tbdy_total_alt = np.max(np.abs(u_tbdy_total_y_alt), axis=1)
+        x_tbdy_total_alt_pos = np.max(u_tbdy_total_x_alt, axis=1)
+        x_tbdy_total_alt_neg = np.min(u_tbdy_total_x_alt, axis=1)
+        y_tbdy_total_alt_pos = np.max(u_tbdy_total_y_alt, axis=1)
+        y_tbdy_total_alt_neg = np.min(u_tbdy_total_y_alt, axis=1)
+        total_tbdy_total_alt = np.max(np.sqrt(u_tbdy_total_x_alt**2 + u_tbdy_total_y_alt**2), axis=1)
+        summary_data["X_tbdy_total_alt_max_m"] = x_tbdy_total_alt
+        summary_data["Y_tbdy_total_alt_max_m"] = y_tbdy_total_alt
+        summary_data["X_tbdy_total_alt_pos_max_m"] = x_tbdy_total_alt_pos
+        summary_data["X_tbdy_total_alt_neg_min_m"] = x_tbdy_total_alt_neg
+        summary_data["Y_tbdy_total_alt_pos_max_m"] = y_tbdy_total_alt_pos
+        summary_data["Y_tbdy_total_alt_neg_min_m"] = y_tbdy_total_alt_neg
+        summary_data["Total_tbdy_total_alt_max_m"] = total_tbdy_total_alt
+        summary_data["Delta_Total_tbdy_alt_minus_primary_m"] = total_tbdy_total_alt - total_tbdy_total
+        with np.errstate(divide="ignore", invalid="ignore"):
+            summary_data["Ratio_Total_tbdy_alt_to_primary"] = np.where(
+                total_tbdy_total != 0,
+                total_tbdy_total_alt / total_tbdy_total,
+                np.nan,
+            )
+
+    summary_df = pd.DataFrame(summary_data)
 
     return {
         "layer_names": layer_names,
@@ -843,13 +1100,22 @@ def _compute_strain_bundle(
         "u_rel_base_y": u_rel_base_y,
         "u_input_proxy_x": u_input_proxy_x,
         "u_input_proxy_y": u_input_proxy_y,
+        "u_input_proxy_x_alt": u_input_proxy_x_alt,
+        "u_input_proxy_y_alt": u_input_proxy_y_alt,
         "u_base_ref_x": u_base_ref_x,
         "u_base_ref_y": u_base_ref_y,
+        "u_base_ref_x_alt": u_base_ref_x_alt,
+        "u_base_ref_y_alt": u_base_ref_y_alt,
         "base_reference": base_reference,
         "u_rel_input_x": u_rel_input_x,
         "u_rel_input_y": u_rel_input_y,
+        "u_rel_input_x_alt": u_rel_input_x_alt,
+        "u_rel_input_y_alt": u_rel_input_y_alt,
         "u_tbdy_total_x": u_tbdy_total_x,
         "u_tbdy_total_y": u_tbdy_total_y,
+        "u_tbdy_total_x_alt": u_tbdy_total_x_alt,
+        "u_tbdy_total_y_alt": u_tbdy_total_y_alt,
+        "integration_meta": integration_meta,
         "summary_df": summary_df,
     }
 
@@ -886,15 +1152,44 @@ def _method2_sheet_name(axis_label: str) -> str:
     return "Method2_TBDY_Time"
 
 
-def _build_method2_workbook(time_df: pd.DataFrame, meta_df: pd.DataFrame) -> bytes:
+def _method2_alt_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_TBDY_X_Time_ALT"
+    if axis == "Y":
+        return "Method2_TBDY_Y_Time_ALT"
+    return "Method2_TBDY_Time_ALT"
+
+
+def _method2_delta_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_TBDY_X_Delta"
+    if axis == "Y":
+        return "Method2_TBDY_Y_Delta"
+    return "Method2_TBDY_Delta"
+
+
+def _build_method2_workbook(
+    time_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+    alt_time_df: pd.DataFrame | None = None,
+    delta_time_df: pd.DataFrame | None = None,
+) -> bytes:
     axis_label = "UNKNOWN"
     if "Axis" in meta_df.columns and not meta_df.empty:
         axis_label = str(meta_df["Axis"].iloc[0]).upper()
     sheet_name = _method2_sheet_name(axis_label)
+    alt_sheet = _method2_alt_sheet_name(axis_label)
+    delta_sheet = _method2_delta_sheet_name(axis_label)
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         time_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        if alt_time_df is not None and not alt_time_df.empty:
+            alt_time_df.to_excel(writer, sheet_name=alt_sheet, index=False)
+        if delta_time_df is not None and not delta_time_df.empty:
+            delta_time_df.to_excel(writer, sheet_name=delta_sheet, index=False)
         meta_df.to_excel(writer, sheet_name="Method2_Metadata", index=False)
 
         if sheet_name in writer.sheets:
@@ -904,6 +1199,22 @@ def _build_method2_workbook(time_df: pd.DataFrame, meta_df: pd.DataFrame) -> byt
                 ws.max_row - 1,
                 ws.max_column - 1,
                 f"Method-2 TBDY {axis_label}: All Layers Time-Displacement",
+            )
+        if alt_sheet in writer.sheets:
+            ws_alt = writer.sheets[alt_sheet]
+            _add_all_layers_chart(
+                ws_alt,
+                ws_alt.max_row - 1,
+                ws_alt.max_column - 1,
+                f"Method-2 TBDY {axis_label} ALT: FFT-Regularized",
+            )
+        if delta_sheet in writer.sheets:
+            ws_delta = writer.sheets[delta_sheet]
+            _add_all_layers_chart(
+                ws_delta,
+                ws_delta.max_row - 1,
+                ws_delta.max_column - 1,
+                f"Method-2 TBDY {axis_label} Delta: ALT - Primary",
             )
 
     return buffer.getvalue()
@@ -931,14 +1242,81 @@ def _merge_profile_frames(profile_frames: Sequence[pd.DataFrame]) -> pd.DataFram
     return merged.sort_values("Depth_m").reset_index(drop=True)
 
 
-def _build_method3_aggregate_workbook(profile_x_df: pd.DataFrame, profile_y_df: pd.DataFrame) -> bytes:
+def _build_method3_delta_df(primary_df: pd.DataFrame, alt_df: pd.DataFrame) -> pd.DataFrame:
+    if primary_df is None or primary_df.empty or alt_df is None or alt_df.empty:
+        return pd.DataFrame(columns=["Depth_m"])
+
+    merged = primary_df.merge(alt_df, on="Depth_m", how="outer")
+    out = pd.DataFrame({"Depth_m": merged["Depth_m"]})
+
+    primary_map: Dict[str, str] = {}
+    for col in primary_df.columns:
+        if col == "Depth_m":
+            continue
+        stem = col.removesuffix("_maxabs_m")
+        primary_map[stem] = col
+
+    alt_map: Dict[str, str] = {}
+    for col in alt_df.columns:
+        if col == "Depth_m":
+            continue
+        stem = col.removesuffix("_maxabs_alt_m")
+        alt_map[stem] = col
+
+    common = sorted(set(primary_map.keys()) & set(alt_map.keys()))
+    for stem in common:
+        p_col = primary_map[stem]
+        a_col = alt_map[stem]
+        out[f"{stem}_delta_m"] = pd.to_numeric(merged[a_col], errors="coerce") - pd.to_numeric(
+            merged[p_col], errors="coerce"
+        )
+
+    return out.sort_values("Depth_m").reset_index(drop=True)
+
+
+def _build_method3_aggregate_workbook(
+    profile_x_df: pd.DataFrame,
+    profile_y_df: pd.DataFrame,
+    profile_x_alt_df: pd.DataFrame | None = None,
+    profile_y_alt_df: pd.DataFrame | None = None,
+    profile_x_delta_df: pd.DataFrame | None = None,
+    profile_y_delta_df: pd.DataFrame | None = None,
+) -> bytes:
     x_df = profile_x_df if profile_x_df is not None and not profile_x_df.empty else pd.DataFrame(columns=["Depth_m"])
     y_df = profile_y_df if profile_y_df is not None and not profile_y_df.empty else pd.DataFrame(columns=["Depth_m"])
+    x_alt_df = (
+        profile_x_alt_df
+        if profile_x_alt_df is not None and not profile_x_alt_df.empty
+        else pd.DataFrame(columns=["Depth_m"])
+    )
+    y_alt_df = (
+        profile_y_alt_df
+        if profile_y_alt_df is not None and not profile_y_alt_df.empty
+        else pd.DataFrame(columns=["Depth_m"])
+    )
+    x_delta_df = (
+        profile_x_delta_df
+        if profile_x_delta_df is not None and not profile_x_delta_df.empty
+        else pd.DataFrame(columns=["Depth_m"])
+    )
+    y_delta_df = (
+        profile_y_delta_df
+        if profile_y_delta_df is not None and not profile_y_delta_df.empty
+        else pd.DataFrame(columns=["Depth_m"])
+    )
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         x_df.to_excel(writer, sheet_name="Method3_Profile_X", index=False)
         y_df.to_excel(writer, sheet_name="Method3_Profile_Y", index=False)
+        if not x_alt_df.empty:
+            x_alt_df.to_excel(writer, sheet_name="Method3_Profile_X_ALT", index=False)
+        if not y_alt_df.empty:
+            y_alt_df.to_excel(writer, sheet_name="Method3_Profile_Y_ALT", index=False)
+        if not x_delta_df.empty:
+            x_delta_df.to_excel(writer, sheet_name="Method3_Delta_X", index=False)
+        if not y_delta_df.empty:
+            y_delta_df.to_excel(writer, sheet_name="Method3_Delta_Y", index=False)
 
         if "Method3_Profile_X" in writer.sheets:
             ws_x = writer.sheets["Method3_Profile_X"]
@@ -946,6 +1324,18 @@ def _build_method3_aggregate_workbook(profile_x_df: pd.DataFrame, profile_y_df: 
         if "Method3_Profile_Y" in writer.sheets:
             ws_y = writer.sheets["Method3_Profile_Y"]
             _add_depth_profile_chart(ws_y, len(y_df), depth_col=1, series_start_col=2)
+        if "Method3_Profile_X_ALT" in writer.sheets:
+            ws_x_alt = writer.sheets["Method3_Profile_X_ALT"]
+            _add_depth_profile_chart(ws_x_alt, len(x_alt_df), depth_col=1, series_start_col=2)
+        if "Method3_Profile_Y_ALT" in writer.sheets:
+            ws_y_alt = writer.sheets["Method3_Profile_Y_ALT"]
+            _add_depth_profile_chart(ws_y_alt, len(y_alt_df), depth_col=1, series_start_col=2)
+        if "Method3_Delta_X" in writer.sheets:
+            ws_x_delta = writer.sheets["Method3_Delta_X"]
+            _add_depth_profile_chart(ws_x_delta, len(x_delta_df), depth_col=1, series_start_col=2)
+        if "Method3_Delta_Y" in writer.sheets:
+            ws_y_delta = writer.sheets["Method3_Delta_Y"]
+            _add_depth_profile_chart(ws_y_delta, len(y_delta_df), depth_col=1, series_start_col=2)
 
     return buffer.getvalue()
 
@@ -998,40 +1388,83 @@ def _compute_single_strain_bundle(
 
     t_input, a_input = _read_input_motion(xl)
     a_input_i = np.interp(time, t_input, a_input)
-    u_input_proxy = _acc_to_disp(
+    compare_cfg = _integration_compare_config(options)
+    integration_meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": bool(compare_cfg["enabled"]),
+    }
+
+    input_dual = _acc_to_disp_dual(
         time,
         a_input_i,
         options=options,
     )
+    u_input_proxy = input_dual["primary"]
+    u_input_proxy_alt = input_dual.get("alt")
+    if isinstance(input_dual.get("meta"), dict):
+        integration_meta.update(input_dual["meta"])
 
     base_reference = _normalize_base_reference((options or {}).get("baseReference", DEFAULT_BASE_REFERENCE))
+    u_base_ref_alt: np.ndarray | None = None
     if base_reference == "deepest_layer":
         deepest_layer = layer_names[-1]
         t_deep, a_deep = _read_layer_column(xl, deepest_layer, "Acceleration (g)")
-        u_deep = _acc_to_disp(t_deep, a_deep, options=options)
+        deep_dual = _acc_to_disp_dual(t_deep, a_deep, options=options)
+        u_deep = deep_dual["primary"]
+        u_deep_alt = deep_dual.get("alt")
         u_base_ref = np.interp(time, t_deep, u_deep)
+        if u_deep_alt is not None:
+            u_base_ref_alt = np.interp(time, t_deep, u_deep_alt)
+        if isinstance(deep_dual.get("meta"), dict):
+            integration_meta.update(deep_dual["meta"])
     else:
         u_base_ref = u_input_proxy
+        if u_input_proxy_alt is not None:
+            u_base_ref_alt = u_input_proxy_alt.copy()
 
     u_rel_input = u_rel_base - u_input_proxy[None, :]
     u_tbdy_total = u_rel_base + u_base_ref[None, :]
+    u_rel_input_alt: np.ndarray | None = None
+    u_tbdy_total_alt: np.ndarray | None = None
+    if u_input_proxy_alt is not None:
+        u_rel_input_alt = u_rel_base - u_input_proxy_alt[None, :]
+    if u_base_ref_alt is not None:
+        u_tbdy_total_alt = u_rel_base + u_base_ref_alt[None, :]
 
     base_rel_max = np.max(np.abs(u_rel_base), axis=1)
     tbdy_total_max = np.max(np.abs(u_tbdy_total), axis=1)
     input_proxy_rel_max = np.max(np.abs(u_rel_input), axis=1)
 
-    summary_df = pd.DataFrame(
-        {
-            "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
-            "Depth_m": depths,
-            "Thickness_m": thickness,
-            "Axis": axis_label,
-            "Base_rel_max_m": base_rel_max,
-            "TBDY_total_max_m": tbdy_total_max,
-            "Input_proxy_rel_max_m": input_proxy_rel_max,
-            "Base_Reference": [base_reference] * n_layers,
-        }
-    )
+    profile_offset_total_est = np.full(n_layers, np.nan, dtype=float)
+    try:
+        profile_bottom = _profile_bottom_max_disp(xl, depths[-1])
+        profile_offset_total_est = (base_rel_max - base_rel_max[-1]) + profile_bottom
+    except Exception:
+        pass
+
+    summary_data: Dict[str, Any] = {
+        "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
+        "Depth_m": depths,
+        "Thickness_m": thickness,
+        "Axis": axis_label,
+        "Base_rel_max_m": base_rel_max,
+        "TBDY_total_max_m": tbdy_total_max,
+        "Profile_offset_total_est_m": profile_offset_total_est,
+        "Input_proxy_rel_max_m": input_proxy_rel_max,
+        "Base_Reference": [base_reference] * n_layers,
+    }
+    if u_tbdy_total_alt is not None:
+        tbdy_total_alt_max = np.max(np.abs(u_tbdy_total_alt), axis=1)
+        summary_data["TBDY_total_alt_max_m"] = tbdy_total_alt_max
+        summary_data["Delta_TBDY_alt_minus_primary_m"] = tbdy_total_alt_max - tbdy_total_max
+        with np.errstate(divide="ignore", invalid="ignore"):
+            summary_data["Ratio_TBDY_alt_to_primary"] = np.where(
+                tbdy_total_max != 0,
+                tbdy_total_alt_max / tbdy_total_max,
+                np.nan,
+            )
+
+    summary_df = pd.DataFrame(summary_data)
 
     return {
         "layer_names": layer_names,
@@ -1040,9 +1473,13 @@ def _compute_single_strain_bundle(
         "time": time,
         "u_rel_base": u_rel_base,
         "u_rel_input": u_rel_input,
+        "u_rel_input_alt": u_rel_input_alt,
         "u_base_ref": u_base_ref,
+        "u_base_ref_alt": u_base_ref_alt,
         "base_reference": base_reference,
         "u_tbdy_total": u_tbdy_total,
+        "u_tbdy_total_alt": u_tbdy_total_alt,
+        "integration_meta": integration_meta,
         "summary_df": summary_df,
     }
 
@@ -1061,18 +1498,26 @@ def _compute_single_direction_disp_bundle(
     layer_names = layer_names[:n_layers]
     depths = depths[:n_layers]
 
-    payload: List[Tuple[np.ndarray, np.ndarray]] = []
+    payload: List[Tuple[np.ndarray, np.ndarray, np.ndarray | None]] = []
     t_start = -np.inf
     t_end = np.inf
     dt_min = np.inf
+    integration_meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": bool(_integration_compare_config(options).get("enabled", False)),
+    }
     for layer_name in layer_names:
         t, a = _read_layer_column(xl, layer_name, "Acceleration (g)")
-        d = _acc_to_disp(
+        dual = _acc_to_disp_dual(
             t,
             a,
             options=options,
         )
-        payload.append((t, d))
+        d = dual["primary"]
+        d_alt = dual.get("alt")
+        payload.append((t, d, d_alt))
+        if isinstance(dual.get("meta"), dict) and dual["meta"].get("integrationCompareEnabled", False):
+            integration_meta.update(dual["meta"])
 
         t_start = max(t_start, t[0])
         t_end = min(t_end, t[-1])
@@ -1088,10 +1533,21 @@ def _compute_single_direction_disp_bundle(
         common_time = t_start + np.arange(sample_count, dtype=float) * dt_min
 
     disp_matrix = np.zeros((n_layers, common_time.size), dtype=float)
-    for i, (t, d) in enumerate(payload):
+    disp_matrix_alt: np.ndarray | None = None
+    if any(item[2] is not None for item in payload):
+        disp_matrix_alt = np.zeros((n_layers, common_time.size), dtype=float)
+
+    for i, (t, d, d_alt) in enumerate(payload):
         disp_matrix[i, :] = np.interp(common_time, t, d)
+        if disp_matrix_alt is not None and d_alt is not None:
+            disp_matrix_alt[i, :] = np.interp(common_time, t, d_alt)
 
     table_df = _build_layer_time_df(common_time, depths, disp_matrix, "disp_m")
+    table_alt_df = None
+    delta_df = None
+    if disp_matrix_alt is not None:
+        table_alt_df = _build_layer_time_df(common_time, depths, disp_matrix_alt, "disp_alt_m")
+        delta_df = _build_layer_time_df(common_time, depths, disp_matrix_alt - disp_matrix, "disp_delta_m")
 
     return {
         "axis": axis_label,
@@ -1099,17 +1555,24 @@ def _compute_single_direction_disp_bundle(
         "depths": depths,
         "time": common_time,
         "disp_matrix": disp_matrix,
+        "disp_matrix_alt": disp_matrix_alt,
         "table_df": table_df,
+        "table_alt_df": table_alt_df,
+        "delta_df": delta_df,
+        "integration_meta": integration_meta,
     }
 
 
 def _build_resultant_time_df(
     x_bundle: Mapping[str, Any],
     y_bundle: Mapping[str, Any],
+    *,
+    matrix_key: str = "disp_matrix",
+    value_suffix: str = "resultant_m",
 ) -> pd.DataFrame:
     n_layers = min(
-        int(x_bundle["disp_matrix"].shape[0]),
-        int(y_bundle["disp_matrix"].shape[0]),
+        int(x_bundle[matrix_key].shape[0]),
+        int(y_bundle[matrix_key].shape[0]),
         int(x_bundle["depths"].size),
         int(y_bundle["depths"].size),
     )
@@ -1120,11 +1583,11 @@ def _build_resultant_time_df(
     data: Dict[str, np.ndarray] = {"Time_s": t}
 
     for i in range(n_layers):
-        x_i = np.interp(t, x_bundle["time"], x_bundle["disp_matrix"][i])
-        y_i = np.interp(t, y_bundle["time"], y_bundle["disp_matrix"][i])
+        x_i = np.interp(t, x_bundle["time"], x_bundle[matrix_key][i])
+        y_i = np.interp(t, y_bundle["time"], y_bundle[matrix_key][i])
         total = np.sqrt(x_i**2 + y_i**2)
         depth = float(x_bundle["depths"][i])
-        data[f"L{i + 1:02d}_z{depth:.3f}m_resultant_m"] = total
+        data[f"L{i + 1:02d}_z{depth:.3f}m_{value_suffix}"] = total
 
     return pd.DataFrame(data)
 
@@ -1151,46 +1614,114 @@ def _compute_legacy_bundle(
     time_hist_x = np.zeros(n_layers, dtype=float)
     time_hist_y = np.zeros(n_layers, dtype=float)
     time_hist_resultant = np.zeros(n_layers, dtype=float)
+    time_hist_x_pos = np.zeros(n_layers, dtype=float)
+    time_hist_x_neg = np.zeros(n_layers, dtype=float)
+    time_hist_y_pos = np.zeros(n_layers, dtype=float)
+    time_hist_y_neg = np.zeros(n_layers, dtype=float)
+    time_hist_x_alt = np.full(n_layers, np.nan, dtype=float)
+    time_hist_y_alt = np.full(n_layers, np.nan, dtype=float)
+    time_hist_resultant_alt = np.full(n_layers, np.nan, dtype=float)
+    time_hist_x_alt_pos = np.full(n_layers, np.nan, dtype=float)
+    time_hist_x_alt_neg = np.full(n_layers, np.nan, dtype=float)
+    time_hist_y_alt_pos = np.full(n_layers, np.nan, dtype=float)
+    time_hist_y_alt_neg = np.full(n_layers, np.nan, dtype=float)
+    integration_meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": bool(_integration_compare_config(options).get("enabled", False)),
+    }
 
     for i, layer_name in enumerate(layer_names):
         tx, ax = _read_layer_column(x_xl, layer_name, "Acceleration (g)")
         ty, ay = _read_layer_column(y_xl, layer_name, "Acceleration (g)")
         t, ax_i, ay_i = _align_two_series(tx, ax, ty, ay)
 
-        dx = _acc_to_disp(
+        dx_dual = _acc_to_disp_dual(
             t,
             ax_i,
             options=options,
         )
-        dy = _acc_to_disp(
+        dy_dual = _acc_to_disp_dual(
             t,
             ay_i,
             options=options,
         )
+        dx = dx_dual["primary"]
+        dy = dy_dual["primary"]
+        dx_alt = dx_dual.get("alt")
+        dy_alt = dy_dual.get("alt")
         total = np.sqrt(dx**2 + dy**2)
 
         time_hist_x[i] = float(np.max(np.abs(dx)))
         time_hist_y[i] = float(np.max(np.abs(dy)))
         time_hist_resultant[i] = float(np.max(total))
+        time_hist_x_pos[i] = float(np.max(dx))
+        time_hist_x_neg[i] = float(np.min(dx))
+        time_hist_y_pos[i] = float(np.max(dy))
+        time_hist_y_neg[i] = float(np.min(dy))
+
+        if dx_alt is not None:
+            time_hist_x_alt[i] = float(np.max(np.abs(dx_alt)))
+            time_hist_x_alt_pos[i] = float(np.max(dx_alt))
+            time_hist_x_alt_neg[i] = float(np.min(dx_alt))
+        if dy_alt is not None:
+            time_hist_y_alt[i] = float(np.max(np.abs(dy_alt)))
+            time_hist_y_alt_pos[i] = float(np.max(dy_alt))
+            time_hist_y_alt_neg[i] = float(np.min(dy_alt))
+        if dx_alt is not None and dy_alt is not None:
+            total_alt = np.sqrt(dx_alt**2 + dy_alt**2)
+            time_hist_resultant_alt[i] = float(np.max(total_alt))
+
+        for candidate in (dx_dual.get("meta"), dy_dual.get("meta")):
+            if isinstance(candidate, dict) and candidate.get("integrationCompareEnabled", False):
+                integration_meta.update(candidate)
 
     profile_rss = np.sqrt(profile_x**2 + profile_y**2)
 
-    summary_df = pd.DataFrame(
-        {
-            "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
-            "Depth_m": depths,
-            "Profile_X_max_m": profile_x,
-            "Profile_Y_max_m": profile_y,
-            "Profile_RSS_total_m": profile_rss,
-            "TimeHist_X_maxabs_m": time_hist_x,
-            "TimeHist_Y_maxabs_m": time_hist_y,
-            "TimeHist_Resultant_total_m": time_hist_resultant,
-        }
-    )
+    summary_data: Dict[str, Any] = {
+        "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
+        "Depth_m": depths,
+        "Profile_X_max_m": profile_x,
+        "Profile_Y_max_m": profile_y,
+        "Profile_RSS_total_m": profile_rss,
+        "Direction_X_maxabs_m": time_hist_x,
+        "Direction_Y_maxabs_m": time_hist_y,
+        "Direction_X_pos_max_m": time_hist_x_pos,
+        "Direction_X_neg_min_m": time_hist_x_neg,
+        "Direction_Y_pos_max_m": time_hist_y_pos,
+        "Direction_Y_neg_min_m": time_hist_y_neg,
+        "TimeHist_X_maxabs_m": time_hist_x,
+        "TimeHist_Y_maxabs_m": time_hist_y,
+        "TimeHist_X_pos_max_m": time_hist_x_pos,
+        "TimeHist_X_neg_min_m": time_hist_x_neg,
+        "TimeHist_Y_pos_max_m": time_hist_y_pos,
+        "TimeHist_Y_neg_min_m": time_hist_y_neg,
+        "TimeHist_Resultant_total_m": time_hist_resultant,
+    }
+    if np.any(np.isfinite(time_hist_x_alt)) or np.any(np.isfinite(time_hist_y_alt)):
+        summary_data["Direction_X_maxabs_alt_m"] = time_hist_x_alt
+        summary_data["Direction_Y_maxabs_alt_m"] = time_hist_y_alt
+        summary_data["Direction_X_alt_pos_max_m"] = time_hist_x_alt_pos
+        summary_data["Direction_X_alt_neg_min_m"] = time_hist_x_alt_neg
+        summary_data["Direction_Y_alt_pos_max_m"] = time_hist_y_alt_pos
+        summary_data["Direction_Y_alt_neg_min_m"] = time_hist_y_alt_neg
+        summary_data["TimeHist_X_maxabs_alt_m"] = time_hist_x_alt
+        summary_data["TimeHist_Y_maxabs_alt_m"] = time_hist_y_alt
+        summary_data["TimeHist_X_alt_pos_max_m"] = time_hist_x_alt_pos
+        summary_data["TimeHist_X_alt_neg_min_m"] = time_hist_x_alt_neg
+        summary_data["TimeHist_Y_alt_pos_max_m"] = time_hist_y_alt_pos
+        summary_data["TimeHist_Y_alt_neg_min_m"] = time_hist_y_alt_neg
+    if np.any(np.isfinite(time_hist_resultant_alt)):
+        summary_data["TimeHist_Resultant_alt_total_m"] = time_hist_resultant_alt
+        summary_data["Delta_TimeHist_Resultant_alt_minus_primary_m"] = (
+            time_hist_resultant_alt - time_hist_resultant
+        )
+
+    summary_df = pd.DataFrame(summary_data)
 
     return {
         "layer_names": layer_names,
         "depths": depths,
+        "integration_meta": integration_meta,
         "summary_df": summary_df,
     }
 
@@ -1205,27 +1736,83 @@ def compute_legacy_methods(
 
 
 def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd.DataFrame:
-    merged = strain_df[
-        [
-            "Layer_Index",
-            "Depth_m",
-            "X_base_rel_max_m",
-            "Y_base_rel_max_m",
-            "Total_base_rel_max_m",
-            "Total_tbdy_total_max_m",
-            "Total_input_proxy_rel_max_m",
-        ]
-    ].merge(
-        legacy_df[
-            [
-                "Layer_Index",
-                "Depth_m",
-                "Profile_X_max_m",
-                "Profile_Y_max_m",
-                "Profile_RSS_total_m",
-                "TimeHist_Resultant_total_m",
-            ]
-        ],
+    strain_cols = [
+        "Layer_Index",
+        "Depth_m",
+        "X_base_rel_max_m",
+        "Y_base_rel_max_m",
+        "X_tbdy_total_max_m",
+        "Y_tbdy_total_max_m",
+        "Total_base_rel_max_m",
+        "Total_tbdy_total_max_m",
+        "Total_input_proxy_rel_max_m",
+    ]
+    for optional_col in (
+        "X_base_rel_pos_max_m",
+        "X_base_rel_neg_min_m",
+        "Y_base_rel_pos_max_m",
+        "Y_base_rel_neg_min_m",
+        "X_tbdy_total_pos_max_m",
+        "X_tbdy_total_neg_min_m",
+        "Y_tbdy_total_pos_max_m",
+        "Y_tbdy_total_neg_min_m",
+        "X_profile_offset_total_est_m",
+        "Y_profile_offset_total_est_m",
+        "Total_profile_offset_total_est_m",
+        "X_tbdy_total_alt_max_m",
+        "Y_tbdy_total_alt_max_m",
+        "X_tbdy_total_alt_pos_max_m",
+        "X_tbdy_total_alt_neg_min_m",
+        "Y_tbdy_total_alt_pos_max_m",
+        "Y_tbdy_total_alt_neg_min_m",
+        "Total_tbdy_total_alt_max_m",
+        "Delta_Total_tbdy_alt_minus_primary_m",
+        "Ratio_Total_tbdy_alt_to_primary",
+    ):
+        if optional_col in strain_df.columns:
+            strain_cols.append(optional_col)
+
+    legacy_cols = [
+        "Layer_Index",
+        "Depth_m",
+        "Profile_X_max_m",
+        "Profile_Y_max_m",
+        "Profile_RSS_total_m",
+        "TimeHist_Resultant_total_m",
+    ]
+    for optional_col in (
+        "Direction_X_maxabs_m",
+        "Direction_Y_maxabs_m",
+        "Direction_X_pos_max_m",
+        "Direction_X_neg_min_m",
+        "Direction_Y_pos_max_m",
+        "Direction_Y_neg_min_m",
+        "TimeHist_X_maxabs_m",
+        "TimeHist_Y_maxabs_m",
+        "TimeHist_X_pos_max_m",
+        "TimeHist_X_neg_min_m",
+        "TimeHist_Y_pos_max_m",
+        "TimeHist_Y_neg_min_m",
+        "Direction_X_maxabs_alt_m",
+        "Direction_Y_maxabs_alt_m",
+        "Direction_X_alt_pos_max_m",
+        "Direction_X_alt_neg_min_m",
+        "Direction_Y_alt_pos_max_m",
+        "Direction_Y_alt_neg_min_m",
+        "TimeHist_X_maxabs_alt_m",
+        "TimeHist_Y_maxabs_alt_m",
+        "TimeHist_X_alt_pos_max_m",
+        "TimeHist_X_alt_neg_min_m",
+        "TimeHist_Y_alt_pos_max_m",
+        "TimeHist_Y_alt_neg_min_m",
+        "TimeHist_Resultant_alt_total_m",
+        "Delta_TimeHist_Resultant_alt_minus_primary_m",
+    ):
+        if optional_col in legacy_df.columns:
+            legacy_cols.append(optional_col)
+
+    merged = strain_df[strain_cols].merge(
+        legacy_df[legacy_cols],
         on=["Layer_Index", "Depth_m"],
         how="inner",
     )
@@ -1250,6 +1837,17 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
     merged["Delta_inputproxy_vs_profile_m"] = (
         merged["Total_input_proxy_rel_max_m"] - merged["Profile_RSS_total_m"]
     )
+    if "Total_tbdy_total_alt_max_m" in merged.columns:
+        merged["Delta_tbdy_alt_vs_profile_m"] = (
+            merged["Total_tbdy_total_alt_max_m"] - merged["Profile_RSS_total_m"]
+        )
+        merged["Delta_tbdy_alt_vs_primary_m"] = (
+            merged["Total_tbdy_total_alt_max_m"] - merged["Total_tbdy_total_max_m"]
+        )
+    if "Total_profile_offset_total_est_m" in merged.columns:
+        merged["Delta_profileoffset_vs_profile_m"] = (
+            merged["Total_profile_offset_total_est_m"] - merged["Profile_RSS_total_m"]
+        )
 
     with np.errstate(divide="ignore", invalid="ignore"):
         merged["Ratio_base_to_profile"] = np.where(
@@ -1262,27 +1860,106 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
             merged["Total_tbdy_total_max_m"] / merged["Profile_RSS_total_m"],
             np.nan,
         )
+        if "Total_tbdy_total_alt_max_m" in merged.columns:
+            merged["Ratio_tbdy_alt_to_profile"] = np.where(
+                merged["Profile_RSS_total_m"] != 0,
+                merged["Total_tbdy_total_alt_max_m"] / merged["Profile_RSS_total_m"],
+                np.nan,
+            )
         merged["Ratio_base_to_timehist"] = np.where(
             merged["TimeHist_Resultant_total_m"] != 0,
             merged["Total_base_rel_max_m"] / merged["TimeHist_Resultant_total_m"],
             np.nan,
         )
+        if "Total_profile_offset_total_est_m" in merged.columns:
+            merged["Ratio_profileoffset_to_profile"] = np.where(
+                merged["Profile_RSS_total_m"] != 0,
+                merged["Total_profile_offset_total_est_m"] / merged["Profile_RSS_total_m"],
+                np.nan,
+            )
 
     return merged
 
 
-def _build_depth_profiles_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
-    return comparison_df[
-        [
-            "Layer_Index",
-            "Depth_m",
+def _build_depth_profiles_df(
+    comparison_df: pd.DataFrame,
+    *,
+    include_resultants: bool = True,
+) -> pd.DataFrame:
+    cols = [
+        "Layer_Index",
+        "Depth_m",
+    ]
+
+    directional_cols = [
+        "Direction_X_pos_max_m",
+        "Direction_X_neg_min_m",
+        "Direction_Y_pos_max_m",
+        "Direction_Y_neg_min_m",
+        "X_base_rel_pos_max_m",
+        "X_base_rel_neg_min_m",
+        "Y_base_rel_pos_max_m",
+        "Y_base_rel_neg_min_m",
+        "Direction_X_alt_pos_max_m",
+        "Direction_X_alt_neg_min_m",
+        "Direction_Y_alt_pos_max_m",
+        "Direction_Y_alt_neg_min_m",
+        "TimeHist_X_pos_max_m",
+        "TimeHist_X_neg_min_m",
+        "TimeHist_Y_pos_max_m",
+        "TimeHist_Y_neg_min_m",
+        "X_tbdy_total_pos_max_m",
+        "X_tbdy_total_neg_min_m",
+        "Y_tbdy_total_pos_max_m",
+        "Y_tbdy_total_neg_min_m",
+        "TimeHist_X_alt_pos_max_m",
+        "TimeHist_X_alt_neg_min_m",
+        "TimeHist_Y_alt_pos_max_m",
+        "TimeHist_Y_alt_neg_min_m",
+        "X_tbdy_total_alt_pos_max_m",
+        "X_tbdy_total_alt_neg_min_m",
+        "Y_tbdy_total_alt_pos_max_m",
+        "Y_tbdy_total_alt_neg_min_m",
+    ]
+    for col in directional_cols:
+        if col in comparison_df.columns:
+            cols.append(col)
+
+    # Backward-compatible directional maxabs series.
+    for col in (
+        "Direction_X_maxabs_m",
+        "Direction_Y_maxabs_m",
+        "X_base_rel_max_m",
+        "Y_base_rel_max_m",
+        "TimeHist_X_maxabs_m",
+        "TimeHist_Y_maxabs_m",
+        "X_tbdy_total_max_m",
+        "Y_tbdy_total_max_m",
+        "Direction_X_maxabs_alt_m",
+        "Direction_Y_maxabs_alt_m",
+        "TimeHist_X_maxabs_alt_m",
+        "TimeHist_Y_maxabs_alt_m",
+        "X_tbdy_total_alt_max_m",
+        "Y_tbdy_total_alt_max_m",
+    ):
+        if col in comparison_df.columns and col not in cols:
+            cols.append(col)
+
+    if include_resultants:
+        for col in (
             "Total_base_rel_max_m",
             "Total_tbdy_total_max_m",
             "Total_input_proxy_rel_max_m",
             "Profile_RSS_total_m",
             "TimeHist_Resultant_total_m",
-        ]
-    ].copy()
+            "Total_tbdy_total_alt_max_m",
+            "TimeHist_Resultant_alt_total_m",
+            "Total_profile_offset_total_est_m",
+        ):
+            if col in comparison_df.columns and col not in cols:
+                cols.append(col)
+
+    return comparison_df[cols].copy()
 
 
 def _build_base_corrected_profiles_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
@@ -1437,12 +2114,20 @@ def build_output_workbook(
     strain_df: pd.DataFrame,
     legacy_df: pd.DataFrame,
     comparison_df: pd.DataFrame,
+    *,
+    include_resultant_profiles: bool = True,
     x_time_df: pd.DataFrame | None = None,
     y_time_df: pd.DataFrame | None = None,
     resultant_time_df: pd.DataFrame | None = None,
     tbdy_total_x_time_df: pd.DataFrame | None = None,
     tbdy_total_y_time_df: pd.DataFrame | None = None,
     tbdy_total_resultant_time_df: pd.DataFrame | None = None,
+    x_time_alt_df: pd.DataFrame | None = None,
+    y_time_alt_df: pd.DataFrame | None = None,
+    resultant_time_alt_df: pd.DataFrame | None = None,
+    tbdy_total_x_time_alt_df: pd.DataFrame | None = None,
+    tbdy_total_y_time_alt_df: pd.DataFrame | None = None,
+    tbdy_total_resultant_time_alt_df: pd.DataFrame | None = None,
 ) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1450,7 +2135,10 @@ def build_output_workbook(
         legacy_df.to_excel(writer, sheet_name="Legacy_Methods", index=False)
         comparison_df.to_excel(writer, sheet_name="Comparison", index=False)
 
-        depth_profiles_df = _build_depth_profiles_df(comparison_df)
+        depth_profiles_df = _build_depth_profiles_df(
+            comparison_df,
+            include_resultants=include_resultant_profiles,
+        )
         depth_profiles_df.to_excel(writer, sheet_name="Depth_Profiles", index=False)
 
         base_corrected_df = _build_base_corrected_profiles_df(comparison_df)
@@ -1468,6 +2156,18 @@ def build_output_workbook(
             tbdy_total_y_time_df.to_excel(writer, sheet_name="TBDY_Total_Y_Time", index=False)
         if tbdy_total_resultant_time_df is not None and not tbdy_total_resultant_time_df.empty:
             tbdy_total_resultant_time_df.to_excel(writer, sheet_name="TBDY_Total_Resultant_Time", index=False)
+        if x_time_alt_df is not None and not x_time_alt_df.empty:
+            x_time_alt_df.to_excel(writer, sheet_name="Direction_X_Time_ALT", index=False)
+        if y_time_alt_df is not None and not y_time_alt_df.empty:
+            y_time_alt_df.to_excel(writer, sheet_name="Direction_Y_Time_ALT", index=False)
+        if resultant_time_alt_df is not None and not resultant_time_alt_df.empty:
+            resultant_time_alt_df.to_excel(writer, sheet_name="Resultant_Time_ALT", index=False)
+        if tbdy_total_x_time_alt_df is not None and not tbdy_total_x_time_alt_df.empty:
+            tbdy_total_x_time_alt_df.to_excel(writer, sheet_name="TBDY_Total_X_Time_ALT", index=False)
+        if tbdy_total_y_time_alt_df is not None and not tbdy_total_y_time_alt_df.empty:
+            tbdy_total_y_time_alt_df.to_excel(writer, sheet_name="TBDY_Total_Y_Time_ALT", index=False)
+        if tbdy_total_resultant_time_alt_df is not None and not tbdy_total_resultant_time_alt_df.empty:
+            tbdy_total_resultant_time_alt_df.to_excel(writer, sheet_name="TBDY_Total_Resultant_Time_ALT", index=False)
 
         workbook = writer.book
 
@@ -1533,6 +2233,60 @@ def build_output_workbook(
                 "TBDY Total Resultant: All Layers",
             )
 
+        if "Direction_X_Time_ALT" in writer.sheets:
+            ws_x_alt = writer.sheets["Direction_X_Time_ALT"]
+            _add_all_layers_chart(
+                ws_x_alt,
+                ws_x_alt.max_row - 1,
+                ws_x_alt.max_column - 1,
+                "Direction X ALT: FFT-Regularized",
+            )
+
+        if "Direction_Y_Time_ALT" in writer.sheets:
+            ws_y_alt = writer.sheets["Direction_Y_Time_ALT"]
+            _add_all_layers_chart(
+                ws_y_alt,
+                ws_y_alt.max_row - 1,
+                ws_y_alt.max_column - 1,
+                "Direction Y ALT: FFT-Regularized",
+            )
+
+        if "Resultant_Time_ALT" in writer.sheets:
+            ws_r_alt = writer.sheets["Resultant_Time_ALT"]
+            _add_all_layers_chart(
+                ws_r_alt,
+                ws_r_alt.max_row - 1,
+                ws_r_alt.max_column - 1,
+                "Resultant ALT: FFT-Regularized",
+            )
+
+        if "TBDY_Total_X_Time_ALT" in writer.sheets:
+            ws_tx_alt = writer.sheets["TBDY_Total_X_Time_ALT"]
+            _add_all_layers_chart(
+                ws_tx_alt,
+                ws_tx_alt.max_row - 1,
+                ws_tx_alt.max_column - 1,
+                "TBDY Total X ALT: FFT-Regularized",
+            )
+
+        if "TBDY_Total_Y_Time_ALT" in writer.sheets:
+            ws_ty_alt = writer.sheets["TBDY_Total_Y_Time_ALT"]
+            _add_all_layers_chart(
+                ws_ty_alt,
+                ws_ty_alt.max_row - 1,
+                ws_ty_alt.max_column - 1,
+                "TBDY Total Y ALT: FFT-Regularized",
+            )
+
+        if "TBDY_Total_Resultant_Time_ALT" in writer.sheets:
+            ws_tr_alt = writer.sheets["TBDY_Total_Resultant_Time_ALT"]
+            _add_all_layers_chart(
+                ws_tr_alt,
+                ws_tr_alt.max_row - 1,
+                ws_tr_alt.max_column - 1,
+                "TBDY Total Resultant ALT: FFT-Regularized",
+            )
+
         _ = workbook
 
     return buffer.getvalue()
@@ -1544,6 +2298,10 @@ def build_single_output_workbook(
     strain_rel_time_df: pd.DataFrame | None = None,
     tbdy_total_time_df: pd.DataFrame | None = None,
     input_proxy_rel_time_df: pd.DataFrame | None = None,
+    direction_time_alt_df: pd.DataFrame | None = None,
+    strain_rel_time_alt_df: pd.DataFrame | None = None,
+    tbdy_total_time_alt_df: pd.DataFrame | None = None,
+    input_proxy_rel_time_alt_df: pd.DataFrame | None = None,
 ) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1556,6 +2314,14 @@ def build_single_output_workbook(
             tbdy_total_time_df.to_excel(writer, sheet_name="TBDY_Total_Time", index=False)
         if input_proxy_rel_time_df is not None and not input_proxy_rel_time_df.empty:
             input_proxy_rel_time_df.to_excel(writer, sheet_name="InputProxy_Relative_Time", index=False)
+        if direction_time_alt_df is not None and not direction_time_alt_df.empty:
+            direction_time_alt_df.to_excel(writer, sheet_name="Direction_Time_ALT", index=False)
+        if strain_rel_time_alt_df is not None and not strain_rel_time_alt_df.empty:
+            strain_rel_time_alt_df.to_excel(writer, sheet_name="Strain_Relative_Time_ALT", index=False)
+        if tbdy_total_time_alt_df is not None and not tbdy_total_time_alt_df.empty:
+            tbdy_total_time_alt_df.to_excel(writer, sheet_name="TBDY_Total_Time_ALT", index=False)
+        if input_proxy_rel_time_alt_df is not None and not input_proxy_rel_time_alt_df.empty:
+            input_proxy_rel_time_alt_df.to_excel(writer, sheet_name="InputProxy_Relative_Time_ALT", index=False)
 
         if "Direction_Time" in writer.sheets:
             ws_dir = writer.sheets["Direction_Time"]
@@ -1591,6 +2357,38 @@ def build_single_output_workbook(
                 ws_ip.max_row - 1,
                 ws_ip.max_column - 1,
                 "Single Direction: Input-Proxy Relative Time",
+            )
+        if "Direction_Time_ALT" in writer.sheets:
+            ws_dir_alt = writer.sheets["Direction_Time_ALT"]
+            _add_all_layers_chart(
+                ws_dir_alt,
+                ws_dir_alt.max_row - 1,
+                ws_dir_alt.max_column - 1,
+                "Single Direction ALT: FFT-Regularized",
+            )
+        if "Strain_Relative_Time_ALT" in writer.sheets:
+            ws_sr_alt = writer.sheets["Strain_Relative_Time_ALT"]
+            _add_all_layers_chart(
+                ws_sr_alt,
+                ws_sr_alt.max_row - 1,
+                ws_sr_alt.max_column - 1,
+                "Single Direction ALT: Strain Base-Relative",
+            )
+        if "TBDY_Total_Time_ALT" in writer.sheets:
+            ws_tb_alt = writer.sheets["TBDY_Total_Time_ALT"]
+            _add_all_layers_chart(
+                ws_tb_alt,
+                ws_tb_alt.max_row - 1,
+                ws_tb_alt.max_column - 1,
+                "Single Direction ALT: TBDY Total",
+            )
+        if "InputProxy_Relative_Time_ALT" in writer.sheets:
+            ws_ip_alt = writer.sheets["InputProxy_Relative_Time_ALT"]
+            _add_all_layers_chart(
+                ws_ip_alt,
+                ws_ip_alt.max_row - 1,
+                ws_ip_alt.max_column - 1,
+                "Single Direction ALT: Input-Proxy Relative",
             )
 
     return buffer.getvalue()
@@ -1631,6 +2429,7 @@ def _extract_method2_single(
 
     with pd.ExcelFile(io.BytesIO(xlsx_bytes), engine="openpyxl") as xl:
         strain_bundle = _compute_single_strain_bundle(xl, axis_label, normalized_options)
+    integration_meta = strain_bundle.get("integration_meta", {})
 
     time_df = _build_layer_time_df(
         strain_bundle["time"],
@@ -1645,6 +2444,31 @@ def _extract_method2_single(
             f"{stem}_maxabs_m": max_abs,
         }
     )
+    alt_time_df = None
+    delta_time_df = None
+    profile_alt_df = pd.DataFrame(columns=["Depth_m"])
+    max_abs_alt = None
+    if strain_bundle.get("u_tbdy_total_alt") is not None:
+        u_tbdy_total_alt = strain_bundle["u_tbdy_total_alt"]
+        alt_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            u_tbdy_total_alt,
+            f"tbdy_total_{axis_label.lower()}_alt_m",
+        )
+        delta_time_df = _build_layer_time_df(
+            strain_bundle["time"],
+            strain_bundle["depths"],
+            u_tbdy_total_alt - strain_bundle["u_tbdy_total"],
+            f"tbdy_total_{axis_label.lower()}_delta_m",
+        )
+        max_abs_alt = np.max(np.abs(u_tbdy_total_alt), axis=1)
+        profile_alt_df = pd.DataFrame(
+            {
+                "Depth_m": strain_bundle["depths"][: len(max_abs_alt)],
+                f"{stem}_maxabs_alt_m": max_abs_alt,
+            }
+        )
 
     meta_df = pd.DataFrame(
         [
@@ -1676,17 +2500,27 @@ def _extract_method2_single(
                 "Filter_Order": int(processing_cfg.get("filter_order", DEFAULT_FILTER_ORDER)),
                 "Highpass_Cutoff_Hz": float(processing_cfg.get("highpass_cutoff_hz", np.nan)),
                 "Highpass_Transition_Hz": float(processing_cfg.get("highpass_transition_hz", np.nan)),
+                "Integration_Primary": str(integration_meta.get("integrationPrimary", "cumtrapz")),
+                "Integration_Compare_On": bool(integration_meta.get("integrationCompareEnabled", False)),
+                "Alt_Integration_Method": integration_meta.get("altIntegrationMethod"),
+                "Alt_LowCut_Hz": integration_meta.get("altLowCutHz"),
             }
         ]
     )
 
-    output_bytes = _build_method2_workbook(time_df, meta_df)
+    output_bytes = _build_method2_workbook(time_df, meta_df, alt_time_df=alt_time_df, delta_time_df=delta_time_df)
     sheet_name = _method2_sheet_name(axis_label)
+    time_sheets = [sheet_name]
+    if alt_time_df is not None and not alt_time_df.empty:
+        time_sheets.append(_method2_alt_sheet_name(axis_label))
+    if delta_time_df is not None and not delta_time_df.empty:
+        time_sheets.append(_method2_delta_sheet_name(axis_label))
 
     return {
         "skipped": False,
         "axis": axis_label,
         "profile_df": profile_df,
+        "profile_alt_df": profile_alt_df,
         "result": {
             "pairKey": f"METHOD2|{stem}",
             "xFileName": file_name if axis_label == "X" else "",
@@ -1697,10 +2531,17 @@ def _extract_method2_single(
                 "mode": "method2_single",
                 "axis": axis_label,
                 "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
+                "integrationPrimary": str(integration_meta.get("integrationPrimary", "cumtrapz")),
+                "integrationCompareEnabled": bool(integration_meta.get("integrationCompareEnabled", False)),
+                "altIntegrationMethod": integration_meta.get("altIntegrationMethod"),
+                "altLowCutHz": integration_meta.get("altLowCutHz"),
                 "layerCount": int(strain_bundle["u_tbdy_total"].shape[0]),
-                "timeSeriesSheets": 1,
-                "timeSheets": [sheet_name],
+                "timeSeriesSheets": len(time_sheets),
+                "timeSheets": time_sheets,
                 "surfaceTBDYTotal_m": float(max_abs[0]) if max_abs.size else float("nan"),
+                "surfaceTBDYTotalAlt_m": (
+                    float(max_abs_alt[0]) if max_abs_alt is not None and max_abs_alt.size else float("nan")
+                ),
             },
         },
     }
@@ -1732,6 +2573,18 @@ def process_single_file(
             np.abs(direction_bundle["disp_matrix"][:n_layers, :]),
             axis=1,
         )
+        if direction_bundle.get("disp_matrix_alt") is not None:
+            timehist_alt = np.max(np.abs(direction_bundle["disp_matrix_alt"][:n_layers, :]), axis=1)
+            summary_df["TimeHist_maxabs_alt_m"] = timehist_alt
+            summary_df["Delta_TimeHist_alt_minus_primary_m"] = timehist_alt - summary_df["TimeHist_maxabs_m"].to_numpy(
+                dtype=float
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                summary_df["Ratio_TimeHist_alt_to_primary"] = np.where(
+                    summary_df["TimeHist_maxabs_m"].to_numpy(dtype=float) != 0,
+                    timehist_alt / summary_df["TimeHist_maxabs_m"].to_numpy(dtype=float),
+                    np.nan,
+                )
 
         strain_rel_time_df = _build_layer_time_df(
             strain_bundle["time"],
@@ -1751,6 +2604,24 @@ def process_single_file(
             strain_bundle["u_rel_input"],
             "input_proxy_rel_m",
         )
+        direction_time_alt_df = direction_bundle.get("table_alt_df")
+        strain_rel_time_alt_df = strain_rel_time_df.copy() if direction_time_alt_df is not None else None
+        tbdy_total_time_alt_df = None
+        input_proxy_rel_time_alt_df = None
+        if strain_bundle.get("u_tbdy_total_alt") is not None:
+            tbdy_total_time_alt_df = _build_layer_time_df(
+                strain_bundle["time"],
+                strain_bundle["depths"],
+                strain_bundle["u_tbdy_total_alt"],
+                "tbdy_total_alt_m",
+            )
+        if strain_bundle.get("u_rel_input_alt") is not None:
+            input_proxy_rel_time_alt_df = _build_layer_time_df(
+                strain_bundle["time"],
+                strain_bundle["depths"],
+                strain_bundle["u_rel_input_alt"],
+                "input_proxy_rel_alt_m",
+            )
 
         output_bytes = build_single_output_workbook(
             summary_df=summary_df,
@@ -1758,9 +2629,29 @@ def process_single_file(
             strain_rel_time_df=strain_rel_time_df,
             tbdy_total_time_df=tbdy_total_time_df,
             input_proxy_rel_time_df=input_proxy_rel_time_df,
+            direction_time_alt_df=direction_time_alt_df,
+            strain_rel_time_alt_df=strain_rel_time_alt_df,
+            tbdy_total_time_alt_df=tbdy_total_time_alt_df,
+            input_proxy_rel_time_alt_df=input_proxy_rel_time_alt_df,
         )
 
     output_file_name = f"output_single_{Path(file_name).stem}.xlsx"
+    integration_meta = strain_bundle.get("integration_meta", {})
+    time_sheets = [
+        "Direction_Time",
+        "Strain_Relative_Time",
+        "TBDY_Total_Time",
+        "InputProxy_Relative_Time",
+    ]
+    if direction_bundle.get("table_alt_df") is not None:
+        time_sheets.extend(
+            [
+                "Direction_Time_ALT",
+                "Strain_Relative_Time_ALT",
+                "TBDY_Total_Time_ALT",
+                "InputProxy_Relative_Time_ALT",
+            ]
+        )
     return {
         "pairKey": f"SINGLE|{Path(file_name).stem}",
         "xFileName": file_name,
@@ -1771,16 +2662,20 @@ def process_single_file(
             "mode": "single",
             "axis": axis_label,
             "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
+            "integrationPrimary": str(integration_meta.get("integrationPrimary", "cumtrapz")),
+            "integrationCompareEnabled": bool(integration_meta.get("integrationCompareEnabled", False)),
+            "altIntegrationMethod": integration_meta.get("altIntegrationMethod"),
+            "altLowCutHz": integration_meta.get("altLowCutHz"),
             "layerCount": int(len(summary_df)),
-            "timeSeriesSheets": 4,
-            "timeSheets": [
-                "Direction_Time",
-                "Strain_Relative_Time",
-                "TBDY_Total_Time",
-                "InputProxy_Relative_Time",
-            ],
+            "timeSeriesSheets": len(time_sheets),
+            "timeSheets": time_sheets,
             "surfaceBaseTotal_m": float(summary_df["Base_rel_max_m"].iloc[0]),
             "surfaceTBDYTotal_m": float(summary_df["TBDY_total_max_m"].iloc[0]),
+            "surfaceTBDYTotalAlt_m": (
+                float(summary_df["TBDY_total_alt_max_m"].iloc[0])
+                if "TBDY_total_alt_max_m" in summary_df.columns
+                else float("nan")
+            ),
             "surfaceProfileRSS_m": float(summary_df["Profile_max_m"].iloc[0]),
         },
     }
@@ -1794,6 +2689,7 @@ def process_xy_pair(
     options: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     normalized_options = _normalize_options(options)
+    include_resultant_profiles = _include_resultant_profiles(normalized_options)
 
     with pd.ExcelFile(io.BytesIO(x_bytes), engine="openpyxl") as x_xl, pd.ExcelFile(
         io.BytesIO(y_bytes), engine="openpyxl"
@@ -1807,6 +2703,14 @@ def process_xy_pair(
         legacy_df = legacy_bundle["summary_df"].copy()
         comparison_df = _build_comparison_df(strain_df, legacy_df)
         resultant_time_df = _build_resultant_time_df(x_direction_bundle, y_direction_bundle)
+        resultant_time_alt_df = None
+        if x_direction_bundle.get("disp_matrix_alt") is not None and y_direction_bundle.get("disp_matrix_alt") is not None:
+            resultant_time_alt_df = _build_resultant_time_df(
+                x_direction_bundle,
+                y_direction_bundle,
+                matrix_key="disp_matrix_alt",
+                value_suffix="resultant_alt_m",
+            )
         tbdy_total_x_time_df = _build_layer_time_df(
             strain_bundle["time"],
             strain_bundle["depths"],
@@ -1828,19 +2732,78 @@ def process_xy_pair(
             tbdy_total_resultant_matrix,
             "tbdy_total_resultant_m",
         )
+        tbdy_total_x_time_alt_df = None
+        tbdy_total_y_time_alt_df = None
+        tbdy_total_resultant_time_alt_df = None
+        if strain_bundle.get("u_tbdy_total_x_alt") is not None and strain_bundle.get("u_tbdy_total_y_alt") is not None:
+            tbdy_total_x_time_alt_df = _build_layer_time_df(
+                strain_bundle["time"],
+                strain_bundle["depths"],
+                strain_bundle["u_tbdy_total_x_alt"],
+                "tbdy_total_x_alt_m",
+            )
+            tbdy_total_y_time_alt_df = _build_layer_time_df(
+                strain_bundle["time"],
+                strain_bundle["depths"],
+                strain_bundle["u_tbdy_total_y_alt"],
+                "tbdy_total_y_alt_m",
+            )
+            tbdy_total_resultant_matrix_alt = np.sqrt(
+                strain_bundle["u_tbdy_total_x_alt"] ** 2 + strain_bundle["u_tbdy_total_y_alt"] ** 2
+            )
+            tbdy_total_resultant_time_alt_df = _build_layer_time_df(
+                strain_bundle["time"],
+                strain_bundle["depths"],
+                tbdy_total_resultant_matrix_alt,
+                "tbdy_total_resultant_alt_m",
+            )
 
     output_bytes = build_output_workbook(
         strain_df,
         legacy_df,
         comparison_df,
+        include_resultant_profiles=include_resultant_profiles,
         x_time_df=x_direction_bundle["table_df"],
         y_time_df=y_direction_bundle["table_df"],
         resultant_time_df=resultant_time_df,
         tbdy_total_x_time_df=tbdy_total_x_time_df,
         tbdy_total_y_time_df=tbdy_total_y_time_df,
         tbdy_total_resultant_time_df=tbdy_total_resultant_time_df,
+        x_time_alt_df=x_direction_bundle.get("table_alt_df"),
+        y_time_alt_df=y_direction_bundle.get("table_alt_df"),
+        resultant_time_alt_df=resultant_time_alt_df,
+        tbdy_total_x_time_alt_df=tbdy_total_x_time_alt_df,
+        tbdy_total_y_time_alt_df=tbdy_total_y_time_alt_df,
+        tbdy_total_resultant_time_alt_df=tbdy_total_resultant_time_alt_df,
     )
     output_file_name = f"output_total_{Path(x_name).stem}.xlsx"
+    integration_meta: Dict[str, Any] = {
+        "integrationPrimary": "cumtrapz",
+        "integrationCompareEnabled": False,
+    }
+    for source in (strain_bundle, legacy_bundle, x_direction_bundle, y_direction_bundle):
+        candidate = source.get("integration_meta")
+        if isinstance(candidate, dict):
+            integration_meta.update(candidate)
+    time_sheets = [
+        "Direction_X_Time",
+        "Direction_Y_Time",
+        "Resultant_Time",
+        "TBDY_Total_X_Time",
+        "TBDY_Total_Y_Time",
+        "TBDY_Total_Resultant_Time",
+    ]
+    if x_direction_bundle.get("table_alt_df") is not None and y_direction_bundle.get("table_alt_df") is not None:
+        time_sheets.extend(
+            [
+                "Direction_X_Time_ALT",
+                "Direction_Y_Time_ALT",
+                "Resultant_Time_ALT",
+                "TBDY_Total_X_Time_ALT",
+                "TBDY_Total_Y_Time_ALT",
+                "TBDY_Total_Resultant_Time_ALT",
+            ]
+        )
 
     return {
         "pairKey": _build_pair_key(x_name, y_name),
@@ -1851,18 +2814,21 @@ def process_xy_pair(
         "metrics": {
             "mode": "pair",
             "baseReference": str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)),
+            "includeResultantProfiles": bool(include_resultant_profiles),
+            "integrationPrimary": str(integration_meta.get("integrationPrimary", "cumtrapz")),
+            "integrationCompareEnabled": bool(integration_meta.get("integrationCompareEnabled", False)),
+            "altIntegrationMethod": integration_meta.get("altIntegrationMethod"),
+            "altLowCutHz": integration_meta.get("altLowCutHz"),
             "layerCount": int(len(strain_df)),
-            "timeSeriesSheets": 6,
-            "timeSheets": [
-                "Direction_X_Time",
-                "Direction_Y_Time",
-                "Resultant_Time",
-                "TBDY_Total_X_Time",
-                "TBDY_Total_Y_Time",
-                "TBDY_Total_Resultant_Time",
-            ],
+            "timeSeriesSheets": len(time_sheets),
+            "timeSheets": time_sheets,
             "surfaceBaseTotal_m": float(strain_df["Total_base_rel_max_m"].iloc[0]),
             "surfaceTBDYTotal_m": float(strain_df["Total_tbdy_total_max_m"].iloc[0]),
+            "surfaceTBDYTotalAlt_m": (
+                float(strain_df["Total_tbdy_total_alt_max_m"].iloc[0])
+                if "Total_tbdy_total_alt_max_m" in strain_df.columns
+                else float("nan")
+            ),
             "surfaceProfileRSS_m": float(legacy_df["Profile_RSS_total_m"].iloc[0]),
         },
     }
@@ -1908,6 +2874,7 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
 def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     normalized_options = _normalize_options(options)
     base_reference = _normalize_base_reference(normalized_options.get("baseReference", DEFAULT_BASE_REFERENCE))
+    integration_cfg = _integration_compare_config(normalized_options)
     fallback_options: Dict[str, Any] | None = None
     if base_reference == "deepest_layer":
         fallback_options = dict(normalized_options)
@@ -1922,6 +2889,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
         normalized_options.get("method3Enabled", normalized_options.get("method23Enabled", True)),
         True,
     )
+    include_resultant_profiles = _include_resultant_profiles(normalized_options)
 
     logs: List[Dict[str, str]] = []
     errors: List[Dict[str, str]] = []
@@ -1943,6 +2911,10 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     _log(logs, "info", f"Detected single files: {len(singles)}")
     _log(logs, "info", f"Method-2 output: {'on' if method2_enabled else 'off'}")
     _log(logs, "info", f"Method-3 output: {'on' if method3_enabled else 'off'}")
+    _log(logs, "info", f"Depth profile resultants: {'on' if include_resultant_profiles else 'off'}")
+    _log(logs, "info", f"Integration compare: {'on' if integration_cfg['enabled'] else 'off'}")
+    if integration_cfg["enabled"]:
+        _log(logs, "info", f"Alt integration method: {integration_cfg['method']} ({ALT_LOWCUT_POLICY})")
     _log(logs, "info", f"Base reference: {base_reference}")
     _log(logs, "info", f"Processing config: {_processing_summary_text(normalized_options)}")
 
@@ -1963,6 +2935,8 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     method3_failed = 0
     method2_profile_x_frames: List[pd.DataFrame] = []
     method2_profile_y_frames: List[pd.DataFrame] = []
+    method2_profile_x_alt_frames: List[pd.DataFrame] = []
+    method2_profile_y_alt_frames: List[pd.DataFrame] = []
 
     def _is_deepest_table_error(exc: Exception) -> bool:
         text = str(exc).lower()
@@ -2062,11 +3036,17 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
                 axis = str(extracted.get("axis", "")).upper()
                 profile_df = extracted.get("profile_df")
+                profile_alt_df = extracted.get("profile_alt_df")
                 if method3_enabled and isinstance(profile_df, pd.DataFrame) and not profile_df.empty:
                     if axis == "X":
                         method2_profile_x_frames.append(profile_df)
                     elif axis == "Y":
                         method2_profile_y_frames.append(profile_df)
+                if method3_enabled and isinstance(profile_alt_df, pd.DataFrame) and not profile_alt_df.empty:
+                    if axis == "X":
+                        method2_profile_x_alt_frames.append(profile_alt_df)
+                    elif axis == "Y":
+                        method2_profile_y_alt_frames.append(profile_alt_df)
 
                 _log(logs, "info", f"Processed Method-2 basis file: {name}")
             except Exception as exc:  # noqa: BLE001
@@ -2088,11 +3068,17 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
                         axis = str(extracted.get("axis", "")).upper()
                         profile_df = extracted.get("profile_df")
+                        profile_alt_df = extracted.get("profile_alt_df")
                         if method3_enabled and isinstance(profile_df, pd.DataFrame) and not profile_df.empty:
                             if axis == "X":
                                 method2_profile_x_frames.append(profile_df)
                             elif axis == "Y":
                                 method2_profile_y_frames.append(profile_df)
+                        if method3_enabled and isinstance(profile_alt_df, pd.DataFrame) and not profile_alt_df.empty:
+                            if axis == "X":
+                                method2_profile_x_alt_frames.append(profile_alt_df)
+                            elif axis == "Y":
+                                method2_profile_y_alt_frames.append(profile_alt_df)
 
                         _log(
                             logs,
@@ -2112,10 +3098,21 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     if method3_enabled and (not fail_fast or not errors):
         profile_x_df = _merge_profile_frames(method2_profile_x_frames)
         profile_y_df = _merge_profile_frames(method2_profile_y_frames)
+        profile_x_alt_df = _merge_profile_frames(method2_profile_x_alt_frames)
+        profile_y_alt_df = _merge_profile_frames(method2_profile_y_alt_frames)
+        profile_x_delta_df = _build_method3_delta_df(profile_x_df, profile_x_alt_df)
+        profile_y_delta_df = _build_method3_delta_df(profile_y_df, profile_y_alt_df)
 
         if not profile_x_df.empty or not profile_y_df.empty:
             try:
-                method3_bytes = _build_method3_aggregate_workbook(profile_x_df, profile_y_df)
+                method3_bytes = _build_method3_aggregate_workbook(
+                    profile_x_df,
+                    profile_y_df,
+                    profile_x_alt_df=profile_x_alt_df,
+                    profile_y_alt_df=profile_y_alt_df,
+                    profile_x_delta_df=profile_x_delta_df,
+                    profile_y_delta_df=profile_y_delta_df,
+                )
                 results.append(
                     {
                         "pairKey": "METHOD3|ALL",
@@ -2126,10 +3123,17 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                         "metrics": {
                             "mode": "method3_aggregate",
                             "baseReference": base_reference,
+                            "integrationPrimary": "cumtrapz",
+                            "integrationCompareEnabled": bool(integration_cfg["enabled"]),
+                            "altIntegrationMethod": (
+                                integration_cfg["method"] if integration_cfg["enabled"] else None
+                            ),
                             "xDepthRows": int(len(profile_x_df)),
                             "yDepthRows": int(len(profile_y_df)),
                             "xProfileColumns": max(0, int(profile_x_df.shape[1]) - 1),
                             "yProfileColumns": max(0, int(profile_y_df.shape[1]) - 1),
+                            "xProfileAltColumns": max(0, int(profile_x_alt_df.shape[1]) - 1),
+                            "yProfileAltColumns": max(0, int(profile_y_alt_df.shape[1]) - 1),
                         },
                     }
                 )
@@ -2159,7 +3163,12 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             "singlesFailed": single_failed,
             "method2Enabled": bool(method2_enabled),
             "method3Enabled": bool(method3_enabled),
+            "includeResultantProfiles": bool(include_resultant_profiles),
             "baseReference": base_reference,
+            "integrationPrimary": "cumtrapz",
+            "integrationCompareEnabled": bool(integration_cfg["enabled"]),
+            "altIntegrationMethod": integration_cfg["method"] if integration_cfg["enabled"] else None,
+            "altLowCutPolicy": ALT_LOWCUT_POLICY if integration_cfg["enabled"] else None,
             "method2Detected": method2_detected,
             "method2Processed": method2_processed,
             "method2Failed": method2_failed,

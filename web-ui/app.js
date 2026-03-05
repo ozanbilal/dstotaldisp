@@ -24,6 +24,8 @@ const dom = {
   failFast: document.getElementById("failFast"),
   method2Enabled: document.getElementById("method2Enabled"),
   method3Enabled: document.getElementById("method3Enabled"),
+  integrationCompareEnabled: document.getElementById("integrationCompareEnabled"),
+  includeResultantProfiles: document.getElementById("includeResultantProfiles"),
   baseReference: document.getElementById("baseReference"),
   baselineOn: document.getElementById("baselineOn"),
   filterOn: document.getElementById("filterOn"),
@@ -138,8 +140,12 @@ function renderMetrics() {
   if (!metrics) return;
 
   const entries = [
+    ["Integration Primary", metrics.integrationPrimary ?? "cumtrapz"],
     ["Method2 Enabled", metrics.method2Enabled ? "yes" : "no"],
     ["Method3 Enabled", metrics.method3Enabled ? "yes" : "no"],
+    ["Depth Resultants (RSS)", metrics.includeResultantProfiles ? "yes" : "no"],
+    ["Integration Compare", metrics.integrationCompareEnabled ? "yes" : "no"],
+    ["Alt Method", metrics.altIntegrationMethod ?? "-"],
     ["Base Reference", metrics.baseReference ?? "input"],
     ["Pairs Detected", metrics.pairsDetected ?? 0],
     ["Singles Detected", metrics.singlesDetected ?? 0],
@@ -216,6 +222,8 @@ function refreshButtons() {
   if (dom.failFast) dom.failFast.disabled = state.isRunning;
   if (dom.method2Enabled) dom.method2Enabled.disabled = state.isRunning;
   if (dom.method3Enabled) dom.method3Enabled.disabled = state.isRunning;
+  if (dom.integrationCompareEnabled) dom.integrationCompareEnabled.disabled = state.isRunning;
+  if (dom.includeResultantProfiles) dom.includeResultantProfiles.disabled = state.isRunning;
   if (dom.baseReference) dom.baseReference.disabled = state.isRunning;
   if (dom.baselineOn) dom.baselineOn.disabled = state.isRunning;
   if (dom.filterOn) dom.filterOn.disabled = state.isRunning;
@@ -354,6 +362,9 @@ async function runBatch() {
           includeManip: false,
           method2Enabled: dom.method2Enabled.checked,
           method3Enabled: dom.method3Enabled.checked,
+          integrationCompareEnabled: dom.integrationCompareEnabled.checked,
+          includeResultantProfiles: dom.includeResultantProfiles.checked,
+          altIntegrationMethod: "fft_regularized",
           baseReference: dom.baseReference?.value || "input",
           processingOrder: dom.processingOrder.value,
           filterDomain: dom.filterDomain.value,

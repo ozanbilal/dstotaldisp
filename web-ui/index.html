@@ -40,6 +40,9 @@
             <label><input id="failFast" type="checkbox" /> fail-fast</label>
             <label><input id="method2Enabled" type="checkbox" checked /> Method-2 outputs</label>
             <label><input id="method3Enabled" type="checkbox" checked /> Method-3 outputs</label>
+            <label><input id="integrationCompareEnabled" type="checkbox" /> Compare with FFT-Regularized integration</label>
+            <label><input id="includeResultantProfiles" type="checkbox" /> Include resultant (RSS) totals in Depth_Profiles</label>
+            <small class="toggle-hint">Alt low-cut: filtering on -> F Low, filtering off -> 0.05 Hz.</small>
           </div>
 
           <div class="filter-controls">
@@ -162,8 +165,8 @@
                 <th>Pair Key</th>
                 <th>Output File</th>
                 <th>Layers</th>
-                <th>Surface Base Total (m)</th>
-                <th>Surface Profile RSS (m)</th>
+                <th>Surface Base (m)</th>
+                <th>Profile RSS (m)</th>
                 <th>Action</th>
               </tr>
             </thead>

@@ -69,6 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="input",
         help="Base displacement reference for TBDY total: input (default) or deepest_layer.",
     )
+    parser.add_argument(
+        "--integration-compare",
+        action="store_true",
+        help="Enable alternative FFT-regularized integration and output comparison sheets/columns.",
+    )
+    parser.add_argument(
+        "--hide-resultant-profiles",
+        action="store_true",
+        help="Hide resultant/total series from Depth_Profiles sheet and chart.",
+    )
+    parser.add_argument(
+        "--alt-integration-method",
+        choices=("fft_regularized",),
+        default="fft_regularized",
+        help="Alternative integration method when --integration-compare is enabled.",
+    )
     return parser
 
 
@@ -95,6 +111,9 @@ def main() -> int:
         "baselineOn": bool(args.baseline_on),
         "filterOn": bool(args.filter_on),
         "baseReference": str(args.base_reference),
+        "integrationCompareEnabled": bool(args.integration_compare),
+        "includeResultantProfiles": not bool(args.hide_resultant_profiles),
+        "altIntegrationMethod": str(args.alt_integration_method),
     }
 
     summary = process_batch_directory(input_dir, output_dir, options)
@@ -132,7 +151,10 @@ def main() -> int:
         f"singles_failed={metrics.get('singlesFailed', 0)} "
         f"method2_enabled={metrics.get('method2Enabled', False)} "
         f"method3_enabled={metrics.get('method3Enabled', False)} "
+        f"include_resultant_profiles={metrics.get('includeResultantProfiles', True)} "
         f"base_reference={metrics.get('baseReference', 'input')} "
+        f"integration_compare={metrics.get('integrationCompareEnabled', False)} "
+        f"alt_method={metrics.get('altIntegrationMethod', '-')} "
         f"method2_detected={metrics.get('method2Detected', 0)} "
         f"method2_processed={metrics.get('method2Processed', 0)} "
         f"method2_failed={metrics.get('method2Failed', 0)} "
