@@ -15,16 +15,24 @@ Not: Mevcut cekirdek, strain tabanli yolakta dogrudan `*_base_rel_*` (base-relat
 
 ## Giris Beklentisi
 
-- Dosya tipi: `.xlsx`
+- Desteklenen giris tipleri:
+  - `.xlsx` DEEPSOIL export workbook
+  - `.db` / `.db3` DEEPSOIL `deepsoilout` database
 - Pair modu esleme kurali:
-  - X dosyasi: adinda `_X_` ve sonda `_H1.xlsx`
-  - Y dosyasi: ayni adin `_X_ -> _Y_`, `_H1 -> _H2` donusmus hali
+  - X girdisi: adinda `_X_` ve `_H1`
+  - Y girdisi: ayni adin `_X_ -> _Y_`, `_H1 -> _H2` donusmus hali
 - Single-file modu:
-  - Eslestirilemeyen her uygun `.xlsx` dosya tek basina islenir.
+  - Eslestirilemeyen her uygun girdi tek basina islenir.
 - Varsayilan dislama:
   - `output_*.xlsx`
-  - `~$*.xlsx`
+  - `~$*`
   - `*-manip.xlsx` (yalniz `--include-manip` ile dahil edilir)
+
+`.db/.db3` icin not:
+
+- En dogrudan toplam yerdegistirme kaynagi `VEL_DISP` tablosudur.
+- Buradan `LAYERn_DISP_TOTAL` ve `LAYERn_DISP_RELATIVE` kolonlari okunur.
+- Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla ayrilir; bu nedenle DB pair tespiti icin `Folder Select` daha guvenlidir.
 
 ## Hesap Mantigi
 
@@ -242,6 +250,33 @@ Method-3, dosya bazinda su seriden uretilir:
 
 Sonra tum X dosyalari tek tabloda (`Method3_Profile_X`), tum Y dosyalari tek tabloda (`Method3_Profile_Y`) birlestirilir.
 
+## DB Direct Modu (`--use-db3-directly` / `Use DB3 directly`)
+
+Bu mod strain/ivme entegrasyonunu atlar ve DEEPSOIL veritabanindaki displacement tablolarini dogrudan kullanir.
+
+- Kaynak tablo: `VEL_DISP`
+- Okunan kolonlar:
+  - `TIME`
+  - `LAYERn_DISP_TOTAL`
+  - `LAYERn_DISP_RELATIVE`
+- Katman derinlikleri: `PROFILES` tablosundan okunur
+
+Bu modda uretilen ciktilar:
+
+- Dosya bazli Method-2 benzeri workbook:
+  - `output_method2_db_<record>.xlsx`
+  - X icin `Method2_DB_Summary_X`, `Method2_DB_Total_X_Time`, `Method2_DB_Relative_X_Time`
+  - Y icin `Method2_DB_Summary_Y`, `Method2_DB_Total_Y_Time`, `Method2_DB_Relative_Y_Time`
+- Toplu Method-3 benzeri workbook:
+  - `output_method3_db_profiles_all.xlsx`
+  - `Method3_DB_Profile_X`
+  - `Method3_DB_Profile_Y`
+
+Not:
+
+- DB direct modunda filtreleme, baseline duzeltme, base reference ve integration compare uygulanmaz.
+- Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla ayrilir; bu nedenle DB mode icin `Folder Select` tercih edilmelidir.
+
 ## Direction vs TBDY Total Farki (Grafikler Neden Farkli?)
 
 `Direction_X_Time` / `Direction_Y_Time` ile `TBDY_Total_X_Time` / `TBDY_Total_Y_Time` ayni buyukluk degildir:
@@ -304,6 +339,7 @@ Opsiyonlar:
 - `--integration-compare`: FFT-regularized alt entegrasyon karsilastirmasini ac
 - `--hide-resultant-profiles`: `Depth_Profiles` sheet/chart icinde resultant/toplam serileri gizle
 - `--alt-integration-method {fft_regularized}`: alt entegrasyon yontemi (su an tek secenek)
+- `--use-db3-directly`: `.db/.db3` icindeki `VEL_DISP` tablosunu dogrudan okuyup DB tabanli Method-2/Method-3 workbook'lari uret
 
 Ornek:
 
@@ -327,6 +363,8 @@ UI ozellikleri:
 - Folder select (`webkitdirectory`) + direkt dosya secimi
 - Secilen dosya listesi ve pair sayaci
 - `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir
+- `Use DB3 directly`: `.db/.db3` dosyalarinda DEEPSOIL displacement tablolarini dogrudan okur; filter/base-reference kontrollerini kapatir
+- `Use manual pairing`: secilen listedeki X/Y adaylarini elle pair yapar; kalan adaylar single kalir
 - `Compare with FFT-Regularized integration` (varsayilan kapali)
 - `Include resultant (RSS) totals in Depth_Profiles` (varsayilan kapali)
 - Processing paneli:

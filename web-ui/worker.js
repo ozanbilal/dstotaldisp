@@ -1,4 +1,5 @@
 const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v0.27.3/full/";
+const APP_VERSION = "20260316c";
 
 importScripts(`${PYODIDE_BASE}pyodide.js`);
 
@@ -52,12 +53,19 @@ async function ensureInitialized() {
     postStatus("Pyodide yukleniyor...", "boot");
     pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
 
-    postStatus("Numpy/Pandas paketleri yukleniyor...", "boot");
+    postStatus("Numpy/Pandas/SQLite paketleri yukleniyor...", "boot");
     try {
-      await pyodide.loadPackage(["numpy", "pandas", "openpyxl"]);
+      await pyodide.loadPackage(["numpy", "pandas", "sqlite3"]);
+    } catch (err) {
+      postStatus("Temel paketler yuklenemedi, tekrar deniyorum...", "boot");
+      await pyodide.loadPackage(["numpy", "pandas", "sqlite3", "micropip"]);
+    }
+
+    try {
+      await pyodide.loadPackage(["openpyxl"]);
     } catch (err) {
       postStatus("openpyxl paketini micropip ile yukluyorum...", "boot");
-      await pyodide.loadPackage(["numpy", "pandas", "micropip"]);
+      await pyodide.loadPackage(["micropip"]);
       await pyodide.runPythonAsync(`
 import micropip
 await micropip.install("openpyxl")
@@ -67,8 +75,8 @@ await micropip.install("openpyxl")
     postStatus("Python modulleri yukleniyor...", "boot");
 
     const [coreResp, entryResp] = await Promise.all([
-      fetch("../disp_core.py"),
-      fetch("./py/pyodide_entry.py"),
+      fetch(`../disp_core.py?v=${APP_VERSION}`),
+      fetch(`./py/pyodide_entry.py?v=${APP_VERSION}`),
     ]);
 
     if (!coreResp.ok) {
@@ -122,6 +130,8 @@ async function handleRunBatch(payload) {
           pairsProcessed: 0,
           pairsFailed: 0,
           pairsMissing: 0,
+          xlsxCandidates: 0,
+          dbCandidates: 0,
           singlesDetected: 0,
           singlesProcessed: 0,
           singlesFailed: 0,
@@ -133,6 +143,9 @@ async function handleRunBatch(payload) {
           altIntegrationMethod: null,
           altLowCutPolicy: null,
           baseReference: "input",
+          useDb3Directly: false,
+          manualPairingEnabled: false,
+          manualPairsApplied: 0,
           method2Detected: 0,
           method2Processed: 0,
           method2Failed: 0,

@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Syne:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260317f" />
   </head>
   <body>
     <main class="shell">
@@ -31,8 +31,8 @@
               <span>Folder Select</span>
             </label>
             <label class="file-picker" data-kind="files">
-              <input id="fileInput" type="file" accept=".xlsx" multiple />
-              <span>File Select (.xlsx)</span>
+              <input id="fileInput" type="file" accept=".xlsx,.db,.db3" multiple />
+              <span>File Select (.xlsx/.db/.db3)</span>
             </label>
           </div>
 
@@ -40,8 +40,12 @@
             <label><input id="failFast" type="checkbox" /> fail-fast</label>
             <label><input id="method2Enabled" type="checkbox" checked /> Method-2 outputs</label>
             <label><input id="method3Enabled" type="checkbox" checked /> Method-3 outputs</label>
+            <label><input id="useDb3Directly" type="checkbox" /> Use DB3 directly</label>
+            <label><input id="manualPairingEnabled" type="checkbox" /> Use manual pairing</label>
             <label><input id="integrationCompareEnabled" type="checkbox" /> Compare with FFT-Regularized integration</label>
             <label><input id="includeResultantProfiles" type="checkbox" /> Include resultant (RSS) totals in Depth_Profiles</label>
+            <small class="toggle-hint">DB3 direct mode reads DEEPSOIL displacement tables directly and disables filter/base-reference controls.</small>
+            <small class="toggle-hint">Manual pairing aciksa sectigin X/Y ciftleri override edilir; kalan adaylar single olarak islenir.</small>
             <small class="toggle-hint">Alt low-cut: filtering on -> F Low, filtering off -> 0.05 Hz.</small>
           </div>
 
@@ -136,17 +140,56 @@
           </div>
           <div class="status-chip">
             <span>Candidate Files</span>
-            <strong id="countStats">Candidate XLSX: 0</strong>
+            <strong id="countStats">Active: 0 | Loaded XLSX: 0 | Loaded DB: 0</strong>
           </div>
         </div>
 
         <div class="selected-files">
           <div class="selected-files-header">
             <span>Selected Files</span>
-            <strong id="selectedFilesMeta">0 files | 0.00 MB</strong>
+            <div class="header-actions">
+              <strong id="selectedFilesMeta">0 files | 0.00 MB</strong>
+              <button id="clearFilesBtn" type="button">Clear Files</button>
+            </div>
           </div>
           <ul id="selectedFilesList" class="selected-files-list">
             <li class="empty">No files selected.</li>
+          </ul>
+        </div>
+
+        <div id="manualPairPanel" class="manual-pairs">
+          <div class="manual-pairs-header">
+            <span>Manual Pairs</span>
+            <div class="header-actions">
+              <strong id="manualPairMeta">0 pairs</strong>
+              <button id="clearPairsBtn" type="button">Clear Pairs</button>
+            </div>
+          </div>
+          <div class="manual-pair-stage">
+            <div class="manual-stage-card">
+              <span>Picked X</span>
+              <strong id="manualStageX">No X picked</strong>
+            </div>
+            <div class="manual-stage-card">
+              <span>Picked Y</span>
+              <strong id="manualStageY">No Y picked</strong>
+            </div>
+            <button id="clearManualStageBtn" type="button">Clear Picks</button>
+          </div>
+          <div class="manual-pair-builder">
+            <label>
+              X Candidate
+              <select id="manualXSelect"></select>
+            </label>
+            <label>
+              Y Candidate
+              <select id="manualYSelect"></select>
+            </label>
+            <button id="addManualPairBtn" type="button">Add Picked Pair</button>
+          </div>
+          <small class="toggle-hint">Listeden Pick X / Pick Y sec. Karsi taraf zaten seciliyse ikinci tiklamada pair aninda eklenir.</small>
+          <ul id="manualPairList" class="manual-pair-list">
+            <li class="empty">Manual pairing kapali.</li>
           </ul>
         </div>
       </section>
@@ -163,6 +206,7 @@
             <thead>
               <tr>
                 <th>Pair Key</th>
+                <th>Mode</th>
                 <th>Output File</th>
                 <th>Layers</th>
                 <th>Surface Base (m)</th>
@@ -181,6 +225,6 @@
       </section>
     </main>
 
-    <script src="./app.js" type="module"></script>
+    <script src="./app.js?v=20260317f" type="module"></script>
   </body>
 </html>

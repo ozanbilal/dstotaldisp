@@ -2,6 +2,7 @@ import io
 import math
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -28,6 +29,8 @@ except Exception:  # noqa: BLE001
 
 EXCLUDE_PREFIXES = ("output_", "~$")
 EXCLUDE_SUFFIXES = ("-manip.xlsx",)
+DB_SUFFIXES = (".db", ".db3")
+XLSX_SUFFIX = ".xlsx"
 DEFAULT_HIGHPASS_CUTOFF_HZ = 0.03
 DEFAULT_HIGHPASS_TRANSITION_HZ = 0.02
 DEFAULT_FILTER_LOW_HZ = 0.10
@@ -700,6 +703,11 @@ def _normalize_base_reference(value: Any) -> str:
 def _include_resultant_profiles(options: Mapping[str, Any] | None) -> bool:
     cfg = options or {}
     return _to_bool(cfg.get("includeResultantProfiles", True), True)
+
+
+def _use_db3_directly(options: Mapping[str, Any] | None) -> bool:
+    cfg = options or {}
+    return _to_bool(cfg.get("useDb3Directly", False), False)
 
 
 def _highpass_config(options: Mapping[str, Any] | None) -> Tuple[bool, float, float]:
@@ -2394,8 +2402,648 @@ def build_single_output_workbook(
     return buffer.getvalue()
 
 
+def _build_db_depth_profiles_df(summary_df: pd.DataFrame, include_resultants: bool = True) -> pd.DataFrame:
+    cols = [
+        "Layer_Index",
+        "Depth_m",
+        "X_total_pos_max_m",
+        "X_total_neg_min_m",
+        "Y_total_pos_max_m",
+        "Y_total_neg_min_m",
+        "X_relative_pos_max_m",
+        "X_relative_neg_min_m",
+        "Y_relative_pos_max_m",
+        "Y_relative_neg_min_m",
+        "X_total_maxabs_m",
+        "Y_total_maxabs_m",
+        "X_relative_maxabs_m",
+        "Y_relative_maxabs_m",
+    ]
+    if include_resultants:
+        cols.extend(
+            [
+                "Total_resultant_maxabs_m",
+                "Relative_resultant_maxabs_m",
+            ]
+        )
+    present = [col for col in cols if col in summary_df.columns]
+    return summary_df[present].copy()
+
+
+def build_db_pair_output_workbook(
+    summary_df: pd.DataFrame,
+    x_total_time_df: pd.DataFrame,
+    y_total_time_df: pd.DataFrame,
+    x_relative_time_df: pd.DataFrame,
+    y_relative_time_df: pd.DataFrame,
+    *,
+    include_resultant_profiles: bool = True,
+    total_resultant_time_df: pd.DataFrame | None = None,
+    relative_resultant_time_df: pd.DataFrame | None = None,
+) -> bytes:
+    depth_profiles_df = _build_db_depth_profiles_df(summary_df, include_resultants=include_resultant_profiles)
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="DB_Profile_Summary", index=False)
+        depth_profiles_df.to_excel(writer, sheet_name="DB_Depth_Profiles", index=False)
+        x_total_time_df.to_excel(writer, sheet_name="DB_Total_X_Time", index=False)
+        y_total_time_df.to_excel(writer, sheet_name="DB_Total_Y_Time", index=False)
+        x_relative_time_df.to_excel(writer, sheet_name="DB_Relative_X_Time", index=False)
+        y_relative_time_df.to_excel(writer, sheet_name="DB_Relative_Y_Time", index=False)
+        if include_resultant_profiles and total_resultant_time_df is not None and not total_resultant_time_df.empty:
+            total_resultant_time_df.to_excel(writer, sheet_name="DB_Total_Resultant_Time", index=False)
+        if include_resultant_profiles and relative_resultant_time_df is not None and not relative_resultant_time_df.empty:
+            relative_resultant_time_df.to_excel(writer, sheet_name="DB_Relative_Resultant_Time", index=False)
+
+        if "DB_Depth_Profiles" in writer.sheets:
+            ws_depth = writer.sheets["DB_Depth_Profiles"]
+            _add_depth_profile_chart(ws_depth, len(depth_profiles_df), depth_col=2, series_start_col=3)
+        if "DB_Total_X_Time" in writer.sheets:
+            ws_x = writer.sheets["DB_Total_X_Time"]
+            _add_all_layers_chart(ws_x, ws_x.max_row - 1, ws_x.max_column - 1, "DB Total X: All Layers")
+        if "DB_Total_Y_Time" in writer.sheets:
+            ws_y = writer.sheets["DB_Total_Y_Time"]
+            _add_all_layers_chart(ws_y, ws_y.max_row - 1, ws_y.max_column - 1, "DB Total Y: All Layers")
+        if "DB_Relative_X_Time" in writer.sheets:
+            ws_rx = writer.sheets["DB_Relative_X_Time"]
+            _add_all_layers_chart(ws_rx, ws_rx.max_row - 1, ws_rx.max_column - 1, "DB Relative X: All Layers")
+        if "DB_Relative_Y_Time" in writer.sheets:
+            ws_ry = writer.sheets["DB_Relative_Y_Time"]
+            _add_all_layers_chart(ws_ry, ws_ry.max_row - 1, ws_ry.max_column - 1, "DB Relative Y: All Layers")
+        if "DB_Total_Resultant_Time" in writer.sheets:
+            ws_tr = writer.sheets["DB_Total_Resultant_Time"]
+            _add_all_layers_chart(ws_tr, ws_tr.max_row - 1, ws_tr.max_column - 1, "DB Total Resultant")
+        if "DB_Relative_Resultant_Time" in writer.sheets:
+            ws_rr = writer.sheets["DB_Relative_Resultant_Time"]
+            _add_all_layers_chart(ws_rr, ws_rr.max_row - 1, ws_rr.max_column - 1, "DB Relative Resultant")
+
+    return buffer.getvalue()
+
+
+def build_db_single_output_workbook(
+    summary_df: pd.DataFrame,
+    total_time_df: pd.DataFrame,
+    relative_time_df: pd.DataFrame,
+) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="DB_Summary", index=False)
+        total_time_df.to_excel(writer, sheet_name="DB_Total_Time", index=False)
+        relative_time_df.to_excel(writer, sheet_name="DB_Relative_Time", index=False)
+
+        if "DB_Total_Time" in writer.sheets:
+            ws_total = writer.sheets["DB_Total_Time"]
+            _add_all_layers_chart(ws_total, ws_total.max_row - 1, ws_total.max_column - 1, "DB Total: All Layers")
+        if "DB_Relative_Time" in writer.sheets:
+            ws_rel = writer.sheets["DB_Relative_Time"]
+            _add_all_layers_chart(ws_rel, ws_rel.max_row - 1, ws_rel.max_column - 1, "DB Relative: All Layers")
+
+    return buffer.getvalue()
+
+
+def _db_method2_summary_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_DB_Summary_X"
+    if axis == "Y":
+        return "Method2_DB_Summary_Y"
+    return "Method2_DB_Summary"
+
+
+def _db_method2_total_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_DB_Total_X_Time"
+    if axis == "Y":
+        return "Method2_DB_Total_Y_Time"
+    return "Method2_DB_Total_Time"
+
+
+def _db_method2_relative_sheet_name(axis_label: str) -> str:
+    axis = axis_label.upper()
+    if axis == "X":
+        return "Method2_DB_Relative_X_Time"
+    if axis == "Y":
+        return "Method2_DB_Relative_Y_Time"
+    return "Method2_DB_Relative_Time"
+
+
+def _build_db_method2_workbook(
+    summary_df: pd.DataFrame,
+    total_time_df: pd.DataFrame,
+    relative_time_df: pd.DataFrame,
+    axis_label: str,
+) -> bytes:
+    summary_sheet = _db_method2_summary_sheet_name(axis_label)
+    total_sheet = _db_method2_total_sheet_name(axis_label)
+    relative_sheet = _db_method2_relative_sheet_name(axis_label)
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name=summary_sheet, index=False)
+        total_time_df.to_excel(writer, sheet_name=total_sheet, index=False)
+        relative_time_df.to_excel(writer, sheet_name=relative_sheet, index=False)
+
+        if total_sheet in writer.sheets:
+            ws_total = writer.sheets[total_sheet]
+            _add_all_layers_chart(
+                ws_total,
+                ws_total.max_row - 1,
+                ws_total.max_column - 1,
+                f"Method-2 DB Total {axis_label}: All Layers",
+            )
+        if relative_sheet in writer.sheets:
+            ws_relative = writer.sheets[relative_sheet]
+            _add_all_layers_chart(
+                ws_relative,
+                ws_relative.max_row - 1,
+                ws_relative.max_column - 1,
+                f"Method-2 DB Relative {axis_label}: All Layers",
+            )
+
+    return buffer.getvalue()
+
+
+def _build_db_method3_aggregate_workbook(
+    profile_x_df: pd.DataFrame,
+    profile_y_df: pd.DataFrame,
+) -> bytes:
+    x_df = profile_x_df if profile_x_df is not None and not profile_x_df.empty else pd.DataFrame(columns=["Depth_m"])
+    y_df = profile_y_df if profile_y_df is not None and not profile_y_df.empty else pd.DataFrame(columns=["Depth_m"])
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        x_df.to_excel(writer, sheet_name="Method3_DB_Profile_X", index=False)
+        y_df.to_excel(writer, sheet_name="Method3_DB_Profile_Y", index=False)
+
+        if "Method3_DB_Profile_X" in writer.sheets:
+            ws_x = writer.sheets["Method3_DB_Profile_X"]
+            _add_depth_profile_chart(ws_x, len(x_df), depth_col=1, series_start_col=2)
+        if "Method3_DB_Profile_Y" in writer.sheets:
+            ws_y = writer.sheets["Method3_DB_Profile_Y"]
+            _add_depth_profile_chart(ws_y, len(y_df), depth_col=1, series_start_col=2)
+
+    return buffer.getvalue()
+
+
+def _import_sqlite3():
+    try:
+        import sqlite3  # type: ignore
+
+        return sqlite3
+    except ModuleNotFoundError as exc:  # pragma: no cover - environment-specific
+        raise ModuleNotFoundError(
+            "sqlite3 is required for DB direct mode. In Pyodide, load the 'sqlite3' package before importing disp_core."
+        ) from exc
+
+
+def _extract_db_method2_single(
+    db_bytes: bytes,
+    file_name: str,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    _ = options
+    bundle = _read_db_disp_bundle(db_bytes, file_name)
+    axis_label = str(bundle.get("axis", "SINGLE")).upper()
+    summary_df = bundle["summary_df"].copy()
+    output_bytes = _build_db_method2_workbook(
+        summary_df,
+        bundle["total_time_df"],
+        bundle["relative_time_df"],
+        axis_label,
+    )
+    record_label = bundle["recordLabel"]
+    profile_df = pd.DataFrame(
+        {
+            "Depth_m": bundle["depths"],
+            f"{record_label}_maxabs_m": np.max(np.abs(bundle["disp_matrix"]), axis=1),
+        }
+    )
+    return {
+        "skipped": False,
+        "axis": axis_label,
+        "profile_df": profile_df,
+        "result": {
+            "pairKey": f"DB_METHOD2|{record_label}",
+            "xFileName": file_name,
+            "yFileName": "",
+            "outputFileName": f"output_method2_db_{record_label}.xlsx",
+            "outputBytes": output_bytes,
+            "metrics": {
+                "mode": "db_method2_single",
+                "axis": axis_label,
+                "layerCount": int(len(summary_df)),
+                "timeSeriesSheets": 2,
+                "timeSheets": [
+                    _db_method2_total_sheet_name(axis_label),
+                    _db_method2_relative_sheet_name(axis_label),
+                ],
+                "surfaceBaseTotal_m": float(summary_df["DB_Total_maxabs_m"].iloc[0]),
+                "surfaceProfileRSS_m": float(summary_df["DB_Relative_maxabs_m"].iloc[0]),
+                "baseReference": "db_direct",
+                "integrationPrimary": "deepsoil_db",
+                "useDb3Directly": True,
+            },
+        },
+    }
+
+
+def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    normalized_options = _normalize_options(options)
+    fail_fast = bool(normalized_options.get("failFast", False))
+    manual_pairing_enabled = _to_bool(normalized_options.get("manualPairingEnabled", False), False)
+    method2_enabled = _to_bool(
+        normalized_options.get("method2Enabled", normalized_options.get("method23Enabled", True)),
+        True,
+    )
+    method3_enabled = _to_bool(
+        normalized_options.get("method3Enabled", normalized_options.get("method23Enabled", True)),
+        True,
+    )
+
+    logs: List[Dict[str, str]] = []
+    errors: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+
+    file_names = sorted(file_map.keys())
+    db_candidates = sorted([name for name in file_names if _candidate_kind(name) == "db" and _is_candidate_file(name, False)])
+    pairs, missing, pair_warnings = _resolve_xy_pairs(
+        db_candidates,
+        include_manip=False,
+        manual_pairing_enabled=manual_pairing_enabled,
+        manual_pairs=normalized_options.get("manualPairs"),
+    )
+    used_in_pairs = {name for pair in pairs for name in pair}
+    singles = sorted([name for name in db_candidates if name not in used_in_pairs])
+
+    _log(logs, "info", f"DB3 direct mode: on")
+    _log(logs, "info", f"DB candidates: {len(db_candidates)}")
+    _log(logs, "info", f"Detected DB X/Y pairs: {len(pairs)}")
+    _log(logs, "info", f"Detected DB single files: {len(singles)}")
+    _log(logs, "info", f"Manual pairing: {'on' if manual_pairing_enabled else 'off'}")
+    _log(logs, "info", f"Method-2 output: {'on' if method2_enabled else 'off'}")
+    _log(logs, "info", f"Method-3 output: {'on' if method3_enabled else 'off'}")
+
+    for warning in pair_warnings:
+        _log(logs, "warning", warning)
+    for missing_x in missing:
+        _log(logs, "warning", f"No Y match for DB X file: {missing_x}")
+
+    method2_detected = len(db_candidates) if (method2_enabled or method3_enabled) else 0
+    method2_processed = 0
+    method2_failed = 0
+    method3_produced = 0
+    profile_x_frames: List[pd.DataFrame] = []
+    profile_y_frames: List[pd.DataFrame] = []
+
+    if method2_enabled or method3_enabled:
+        for name in db_candidates:
+            try:
+                extracted = _extract_db_method2_single(file_map[name], name, normalized_options)
+                axis = str(extracted.get("axis", "")).upper()
+                profile_df = extracted.get("profile_df")
+                if method2_enabled:
+                    results.append(extracted["result"])
+                    method2_processed += 1
+                if method3_enabled and isinstance(profile_df, pd.DataFrame) and not profile_df.empty:
+                    if axis == "X":
+                        profile_x_frames.append(profile_df)
+                    elif axis == "Y":
+                        profile_y_frames.append(profile_df)
+                _log(logs, "info", f"Processed DB method basis file: {name}")
+            except Exception as exc:  # noqa: BLE001
+                method2_failed += 1
+                errors.append({"pairKey": f"DB_METHOD2|{name}", "reason": str(exc)})
+                _log(logs, "error", f"Failed DB file {name}: {exc}")
+                if fail_fast:
+                    break
+
+    if method3_enabled and (not fail_fast or not errors):
+        profile_x_df = _merge_profile_frames(profile_x_frames)
+        profile_y_df = _merge_profile_frames(profile_y_frames)
+        if not profile_x_df.empty or not profile_y_df.empty:
+            try:
+                method3_bytes = _build_db_method3_aggregate_workbook(profile_x_df, profile_y_df)
+                results.append(
+                    {
+                        "pairKey": "DB_METHOD3|ALL",
+                        "xFileName": "",
+                        "yFileName": "",
+                        "outputFileName": "output_method3_db_profiles_all.xlsx",
+                        "outputBytes": method3_bytes,
+                        "metrics": {
+                            "mode": "db_method3_aggregate",
+                            "baseReference": "db_direct",
+                            "integrationPrimary": "deepsoil_db",
+                            "layerCount": max(int(len(profile_x_df)), int(len(profile_y_df))),
+                            "xDepthRows": int(len(profile_x_df)),
+                            "yDepthRows": int(len(profile_y_df)),
+                            "xProfileColumns": max(0, int(profile_x_df.shape[1]) - 1),
+                            "yProfileColumns": max(0, int(profile_y_df.shape[1]) - 1),
+                            "useDb3Directly": True,
+                        },
+                    }
+                )
+                method3_produced = 1
+                _log(logs, "info", "Produced DB Method-3 aggregate workbook: output_method3_db_profiles_all.xlsx")
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"pairKey": "DB_METHOD3|ALL", "reason": str(exc)})
+                _log(logs, "error", f"Failed DB Method-3 aggregate workbook: {exc}")
+        else:
+            _log(logs, "warning", "DB Method-3 aggregate workbook skipped: no valid X/Y DB profiles found.")
+
+    processed_total = method2_processed + method3_produced
+    failed_total = method2_failed
+
+    return {
+        "results": results,
+        "logs": logs,
+        "errors": errors,
+        "metrics": {
+            "pairsDetected": len(pairs),
+            "pairsProcessed": 0,
+            "pairsFailed": 0,
+            "pairsMissing": len(missing),
+            "dbCandidates": len(db_candidates),
+            "xlsxCandidates": 0,
+            "singlesDetected": len(singles),
+            "singlesProcessed": 0,
+            "singlesFailed": 0,
+            "method2Enabled": bool(method2_enabled),
+            "method3Enabled": bool(method3_enabled),
+            "includeResultantProfiles": False,
+            "baseReference": "db_direct",
+            "integrationPrimary": "deepsoil_db",
+            "integrationCompareEnabled": False,
+            "altIntegrationMethod": None,
+            "altLowCutPolicy": None,
+            "useDb3Directly": True,
+            "manualPairingEnabled": bool(manual_pairing_enabled),
+            "manualPairsApplied": len(pairs),
+            "method2Detected": method2_detected,
+            "method2Processed": method2_processed,
+            "method2Failed": method2_failed,
+            "method3Produced": method3_produced,
+            "processedTotal": processed_total,
+            "failedTotal": failed_total,
+        },
+    }
+
+
+def _read_db_disp_bundle(
+    db_bytes: bytes,
+    file_name: str,
+) -> Dict[str, Any]:
+    sqlite3 = _import_sqlite3()
+    suffix = _candidate_suffix(file_name)
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".db3") as temp_file:
+            temp_file.write(db_bytes)
+            temp_path = temp_file.name
+
+        conn = sqlite3.connect(temp_path)
+        try:
+            profile_df = pd.read_sql_query(
+                (
+                    "SELECT LAYER_NUMBER, DEPTH_LAYER_TOP, DEPTH_LAYER_MID, "
+                    "MIN_DISP_RELATIVE, MAX_DISP_RELATIVE "
+                    "FROM PROFILES ORDER BY LAYER_NUMBER"
+                ),
+                conn,
+            )
+            if profile_df.empty:
+                raise ValueError(f"PROFILES table is empty in DB file: {file_name}")
+
+            vel_columns = [row[1] for row in conn.execute("PRAGMA table_info(VEL_DISP)").fetchall()]
+            if not vel_columns:
+                raise ValueError(f"VEL_DISP table not found in DB file: {file_name}")
+
+            layers: List[int] = []
+            depths: List[float] = []
+            total_cols: List[str] = []
+            relative_cols: List[str] = []
+            for _, row in profile_df.iterrows():
+                layer_no = int(row["LAYER_NUMBER"])
+                total_col = f"LAYER{layer_no}_DISP_TOTAL"
+                relative_col = f"LAYER{layer_no}_DISP_RELATIVE"
+                if total_col not in vel_columns or relative_col not in vel_columns:
+                    continue
+                depth = float(row["DEPTH_LAYER_TOP"])
+                if not np.isfinite(depth):
+                    continue
+                layers.append(layer_no)
+                depths.append(depth)
+                total_cols.append(total_col)
+                relative_cols.append(relative_col)
+
+            if not layers:
+                raise ValueError(f"No displacement columns found in VEL_DISP for DB file: {file_name}")
+
+            query_cols = ["TIME", *total_cols, *relative_cols]
+            vel_df = pd.read_sql_query(f"SELECT {', '.join(query_cols)} FROM VEL_DISP", conn)
+        finally:
+            conn.close()
+
+        vel_df["TIME"] = pd.to_numeric(vel_df["TIME"], errors="coerce")
+        vel_df = vel_df.dropna(subset=["TIME"]).sort_values("TIME")
+        if vel_df.empty:
+            raise ValueError(f"VEL_DISP contains no valid time rows for DB file: {file_name}")
+
+        time = vel_df["TIME"].to_numpy(dtype=float)
+        total_matrix = np.vstack([pd.to_numeric(vel_df[col], errors="coerce").fillna(0.0).to_numpy(dtype=float) for col in total_cols])
+        relative_matrix = np.vstack(
+            [pd.to_numeric(vel_df[col], errors="coerce").fillna(0.0).to_numpy(dtype=float) for col in relative_cols]
+        )
+        depth_array = np.asarray(depths, dtype=float)
+
+        total_maxabs = np.max(np.abs(total_matrix), axis=1)
+        total_pos = np.max(total_matrix, axis=1)
+        total_neg = np.min(total_matrix, axis=1)
+        relative_maxabs = np.max(np.abs(relative_matrix), axis=1)
+        relative_pos = np.max(relative_matrix, axis=1)
+        relative_neg = np.min(relative_matrix, axis=1)
+
+        axis_label = _infer_axis_label(file_name)
+        summary_df = pd.DataFrame(
+            {
+                "Layer_Index": np.arange(1, len(layers) + 1, dtype=int),
+                "Depth_m": depth_array,
+                "Axis": [axis_label] * len(layers),
+                "DB_Total_maxabs_m": total_maxabs,
+                "DB_Total_pos_max_m": total_pos,
+                "DB_Total_neg_min_m": total_neg,
+                "DB_Relative_maxabs_m": relative_maxabs,
+                "DB_Relative_pos_max_m": relative_pos,
+                "DB_Relative_neg_min_m": relative_neg,
+            }
+        )
+
+        return {
+            "axis": axis_label,
+            "recordLabel": _record_label_from_name(file_name) or Path(file_name).stem,
+            "layer_numbers": np.asarray(layers, dtype=int),
+            "depths": depth_array,
+            "time": time,
+            "disp_matrix": total_matrix,
+            "relative_matrix": relative_matrix,
+            "summary_df": summary_df,
+            "total_time_df": _build_layer_time_df(time, depth_array, total_matrix, "db_total_m"),
+            "relative_time_df": _build_layer_time_df(time, depth_array, relative_matrix, "db_relative_m"),
+        }
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+def process_db_single(
+    file_bytes: bytes,
+    file_name: str,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    _ = options
+    bundle = _read_db_disp_bundle(file_bytes, file_name)
+    summary_df = bundle["summary_df"].copy()
+    output_bytes = build_db_single_output_workbook(
+        summary_df,
+        bundle["total_time_df"],
+        bundle["relative_time_df"],
+    )
+    record_label = bundle["recordLabel"]
+    output_file_name = f"output_db_single_{record_label}.xlsx"
+    return {
+        "pairKey": f"DB_SINGLE|{record_label}",
+        "xFileName": file_name,
+        "yFileName": "",
+        "outputFileName": output_file_name,
+        "outputBytes": output_bytes,
+        "metrics": {
+            "mode": "db_single",
+            "axis": bundle["axis"],
+            "layerCount": int(len(summary_df)),
+            "timeSeriesSheets": 2,
+            "timeSheets": ["DB_Total_Time", "DB_Relative_Time"],
+            "surfaceBaseTotal_m": float(summary_df["DB_Total_maxabs_m"].iloc[0]),
+            "surfaceProfileRSS_m": float(summary_df["DB_Relative_maxabs_m"].iloc[0]),
+            "baseReference": "db_direct",
+            "integrationPrimary": "deepsoil_db",
+        },
+    }
+
+
+def process_db_pair(
+    x_bytes: bytes,
+    y_bytes: bytes,
+    x_name: str,
+    y_name: str,
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    normalized_options = _normalize_options(options)
+    include_resultant_profiles = _include_resultant_profiles(normalized_options)
+
+    x_bundle = _read_db_disp_bundle(x_bytes, x_name)
+    y_bundle = _read_db_disp_bundle(y_bytes, y_name)
+    n_layers = min(
+        int(x_bundle["disp_matrix"].shape[0]),
+        int(y_bundle["disp_matrix"].shape[0]),
+        int(x_bundle["depths"].size),
+        int(y_bundle["depths"].size),
+    )
+    if n_layers <= 0:
+        raise ValueError(f"No common layers found in DB pair: {x_name}, {y_name}")
+
+    depths = x_bundle["depths"][:n_layers]
+    x_total = x_bundle["disp_matrix"][:n_layers, :]
+    y_total = y_bundle["disp_matrix"][:n_layers, :]
+    x_relative = x_bundle["relative_matrix"][:n_layers, :]
+    y_relative = y_bundle["relative_matrix"][:n_layers, :]
+
+    total_resultant_time_df = _build_resultant_time_df(
+        {"time": x_bundle["time"], "depths": depths, "total_matrix": x_total},
+        {"time": y_bundle["time"], "depths": depths, "total_matrix": y_total},
+        matrix_key="total_matrix",
+        value_suffix="db_total_resultant_m",
+    )
+    relative_resultant_time_df = _build_resultant_time_df(
+        {"time": x_bundle["time"], "depths": depths, "relative_matrix": x_relative},
+        {"time": y_bundle["time"], "depths": depths, "relative_matrix": y_relative},
+        matrix_key="relative_matrix",
+        value_suffix="db_relative_resultant_m",
+    )
+
+    total_resultant_max = np.max(np.abs(total_resultant_time_df.iloc[:, 1:].to_numpy(dtype=float)), axis=0)
+    relative_resultant_max = np.max(np.abs(relative_resultant_time_df.iloc[:, 1:].to_numpy(dtype=float)), axis=0)
+
+    summary_df = pd.DataFrame(
+        {
+            "Layer_Index": np.arange(1, n_layers + 1, dtype=int),
+            "Depth_m": depths,
+            "X_total_maxabs_m": np.max(np.abs(x_total), axis=1),
+            "X_total_pos_max_m": np.max(x_total, axis=1),
+            "X_total_neg_min_m": np.min(x_total, axis=1),
+            "Y_total_maxabs_m": np.max(np.abs(y_total), axis=1),
+            "Y_total_pos_max_m": np.max(y_total, axis=1),
+            "Y_total_neg_min_m": np.min(y_total, axis=1),
+            "X_relative_maxabs_m": np.max(np.abs(x_relative), axis=1),
+            "X_relative_pos_max_m": np.max(x_relative, axis=1),
+            "X_relative_neg_min_m": np.min(x_relative, axis=1),
+            "Y_relative_maxabs_m": np.max(np.abs(y_relative), axis=1),
+            "Y_relative_pos_max_m": np.max(y_relative, axis=1),
+            "Y_relative_neg_min_m": np.min(y_relative, axis=1),
+            "Total_resultant_maxabs_m": total_resultant_max,
+            "Relative_resultant_maxabs_m": relative_resultant_max,
+        }
+    )
+
+    output_bytes = build_db_pair_output_workbook(
+        summary_df,
+        _build_layer_time_df(x_bundle["time"], depths, x_total, "db_total_m"),
+        _build_layer_time_df(y_bundle["time"], depths, y_total, "db_total_m"),
+        _build_layer_time_df(x_bundle["time"], depths, x_relative, "db_relative_m"),
+        _build_layer_time_df(y_bundle["time"], depths, y_relative, "db_relative_m"),
+        include_resultant_profiles=include_resultant_profiles,
+        total_resultant_time_df=total_resultant_time_df,
+        relative_resultant_time_df=relative_resultant_time_df,
+    )
+    record_label = x_bundle["recordLabel"]
+    output_file_name = f"output_db_pair_{record_label}.xlsx"
+    return {
+        "pairKey": f"DB|{_build_pair_key(x_name, y_name)}",
+        "xFileName": x_name,
+        "yFileName": y_name,
+        "outputFileName": output_file_name,
+        "outputBytes": output_bytes,
+        "metrics": {
+            "mode": "db_pair",
+            "layerCount": int(len(summary_df)),
+            "timeSeriesSheets": 4 + (2 if include_resultant_profiles else 0),
+            "timeSheets": (
+                [
+                    "DB_Total_X_Time",
+                    "DB_Total_Y_Time",
+                    "DB_Relative_X_Time",
+                    "DB_Relative_Y_Time",
+                ]
+                + (
+                    ["DB_Total_Resultant_Time", "DB_Relative_Resultant_Time"]
+                    if include_resultant_profiles
+                    else []
+                )
+            ),
+            "surfaceBaseTotal_m": float(summary_df["Total_resultant_maxabs_m"].iloc[0]),
+            "surfaceProfileRSS_m": float(summary_df["Relative_resultant_maxabs_m"].iloc[0]),
+            "includeResultantProfiles": bool(include_resultant_profiles),
+            "baseReference": "db_direct",
+            "integrationPrimary": "deepsoil_db",
+        },
+    }
+
+
 def _infer_axis_label(file_name: str) -> str:
-    upper_name = file_name.upper()
+    upper_name = str(file_name).replace("\\", "/").upper()
     if "_X_" in upper_name:
         return "X"
     if "_Y_" in upper_name:
@@ -2403,9 +3051,33 @@ def _infer_axis_label(file_name: str) -> str:
     return "SINGLE"
 
 
+def _candidate_suffix(name: str) -> str:
+    return Path(str(name)).suffix.lower()
+
+
+def _candidate_kind(name: str) -> str:
+    suffix = _candidate_suffix(name)
+    if suffix == XLSX_SUFFIX:
+        return "xlsx"
+    if suffix in DB_SUFFIXES:
+        return "db"
+    return "unknown"
+
+
+def _record_label_from_name(name: str) -> str:
+    raw = str(name).replace("\\", "/").strip("/")
+    if not raw:
+        return ""
+    path = Path(raw)
+    stem = path.stem
+    if stem.lower() in {"deepsoilout", "deepsoil"} and path.parent and str(path.parent) not in {"", "."}:
+        return Path(str(path.parent)).name
+    return stem
+
+
 def _build_pair_key(x_name: str, y_name: str) -> str:
-    x_stem = Path(x_name).stem
-    y_stem = Path(y_name).stem
+    x_stem = _record_label_from_name(x_name) or Path(x_name).stem
+    y_stem = _record_label_from_name(y_name) or Path(y_name).stem
     base = x_stem.replace("_X_", "_").replace("_H1", "")
     return f"{base}|{y_stem}"
 
@@ -2836,18 +3508,19 @@ def process_xy_pair(
 
 def _is_candidate_file(name: str, include_manip: bool) -> bool:
     lower_name = name.lower()
-    if not lower_name.endswith(".xlsx"):
+    suffix = _candidate_suffix(name)
+    if suffix not in (XLSX_SUFFIX, *DB_SUFFIXES):
         return False
     if any(lower_name.startswith(prefix) for prefix in EXCLUDE_PREFIXES):
         return False
-    if not include_manip and any(lower_name.endswith(suffix) for suffix in EXCLUDE_SUFFIXES):
+    if suffix == XLSX_SUFFIX and not include_manip and any(lower_name.endswith(item) for item in EXCLUDE_SUFFIXES):
         return False
     return True
 
 
 def _derive_y_name(x_name: str) -> str:
-    replaced = x_name.replace("_X_", "_Y_", 1)
-    replaced = re.sub(r"_H1(?=\.xlsx$)", "_H2", replaced, flags=re.IGNORECASE)
+    replaced = re.sub(r"_X_", "_Y_", x_name, count=1, flags=re.IGNORECASE)
+    replaced = re.sub(r"_H1", "_H2", replaced, count=1, flags=re.IGNORECASE)
     return replaced
 
 
@@ -2855,7 +3528,7 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
     candidates = {name for name in file_names if _is_candidate_file(name, include_manip)}
 
     x_files = sorted(
-        [name for name in candidates if "_X_" in name and re.search(r"_H1(?=\.xlsx$)", name, flags=re.IGNORECASE)]
+        [name for name in candidates if _infer_axis_label(name) == "X" and re.search(r"_H1", name, flags=re.IGNORECASE)]
     )
 
     pairs: List[Tuple[str, str]] = []
@@ -2871,10 +3544,76 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
     return pairs, missing
 
 
+def _coerce_manual_pairs(raw_pairs: Any) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    if not isinstance(raw_pairs, (list, tuple)):
+        return out
+
+    for item in raw_pairs:
+        x_name = ""
+        y_name = ""
+        if isinstance(item, Mapping):
+            x_name = str(item.get("xName") or item.get("x") or "").strip()
+            y_name = str(item.get("yName") or item.get("y") or "").strip()
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            x_name = str(item[0] or "").strip()
+            y_name = str(item[1] or "").strip()
+
+        if x_name and y_name:
+            out.append((x_name, y_name))
+
+    return out
+
+
+def _resolve_xy_pairs(
+    file_names: Sequence[str],
+    *,
+    include_manip: bool = False,
+    manual_pairing_enabled: bool = False,
+    manual_pairs: Any = None,
+) -> Tuple[List[Tuple[str, str]], List[str], List[str]]:
+    candidates = {name for name in file_names if _is_candidate_file(name, include_manip)}
+
+    if not manual_pairing_enabled:
+        pairs, missing = find_xy_pairs(file_names, include_manip=include_manip)
+        return pairs, missing, []
+
+    warnings: List[str] = []
+    resolved_pairs: List[Tuple[str, str]] = []
+    used_names: set[str] = set()
+    raw_manual_pairs = _coerce_manual_pairs(manual_pairs)
+
+    if not raw_manual_pairs:
+        warnings.append("Manual pairing enabled but no valid X/Y selections were provided.")
+        return [], [], warnings
+
+    for x_name, y_name in raw_manual_pairs:
+        if x_name not in candidates or y_name not in candidates:
+            warnings.append(f"Manual pair ignored (missing candidate): {x_name} + {y_name}")
+            continue
+        if _infer_axis_label(x_name) != "X" or _infer_axis_label(y_name) != "Y":
+            warnings.append(f"Manual pair ignored (axis mismatch): {x_name} + {y_name}")
+            continue
+        x_key = x_name.lower()
+        y_key = y_name.lower()
+        if x_key in used_names or y_key in used_names:
+            warnings.append(f"Manual pair ignored (candidate already used): {x_name} + {y_name}")
+            continue
+        used_names.add(x_key)
+        used_names.add(y_key)
+        resolved_pairs.append((x_name, y_name))
+
+    return resolved_pairs, [], warnings
+
+
 def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     normalized_options = _normalize_options(options)
+    if _use_db3_directly(normalized_options):
+        return _process_db_batch_files(file_map, normalized_options)
+
     base_reference = _normalize_base_reference(normalized_options.get("baseReference", DEFAULT_BASE_REFERENCE))
     integration_cfg = _integration_compare_config(normalized_options)
+    manual_pairing_enabled = _to_bool(normalized_options.get("manualPairingEnabled", False), False)
     fallback_options: Dict[str, Any] | None = None
     if base_reference == "deepest_layer":
         fallback_options = dict(normalized_options)
@@ -2896,8 +3635,19 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     results: List[Dict[str, Any]] = []
 
     file_names = sorted(file_map.keys())
-    candidates = sorted([name for name in file_names if _is_candidate_file(name, include_manip)])
-    pairs, missing = find_xy_pairs(file_names, include_manip=include_manip)
+    xlsx_candidates = sorted(
+        [name for name in file_names if _candidate_kind(name) == "xlsx" and _is_candidate_file(name, include_manip)]
+    )
+    db_candidates = sorted(
+        [name for name in file_names if _candidate_kind(name) == "db" and _is_candidate_file(name, include_manip)]
+    )
+    candidates = xlsx_candidates
+    pairs, missing, pair_warnings = _resolve_xy_pairs(
+        xlsx_candidates,
+        include_manip=include_manip,
+        manual_pairing_enabled=manual_pairing_enabled,
+        manual_pairs=normalized_options.get("manualPairs"),
+    )
 
     used_in_pairs = set()
     for x_name, y_name in pairs:
@@ -2906,9 +3656,10 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
     singles = sorted([name for name in candidates if name not in used_in_pairs])
 
-    _log(logs, "info", f"Candidate files: {len(candidates)}")
+    _log(logs, "info", f"Candidate files: {len(candidates)} (xlsx={len(xlsx_candidates)}, db={len(db_candidates)})")
     _log(logs, "info", f"Detected X/Y pairs: {len(pairs)}")
     _log(logs, "info", f"Detected single files: {len(singles)}")
+    _log(logs, "info", f"Manual pairing: {'on' if manual_pairing_enabled else 'off'}")
     _log(logs, "info", f"Method-2 output: {'on' if method2_enabled else 'off'}")
     _log(logs, "info", f"Method-3 output: {'on' if method3_enabled else 'off'}")
     _log(logs, "info", f"Depth profile resultants: {'on' if include_resultant_profiles else 'off'}")
@@ -2918,6 +3669,8 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     _log(logs, "info", f"Base reference: {base_reference}")
     _log(logs, "info", f"Processing config: {_processing_summary_text(normalized_options)}")
 
+    for warning in pair_warnings:
+        _log(logs, "warning", warning)
     for missing_x in missing:
         if missing_x in singles:
             _log(logs, "warning", f"No Y match for X file; processing single: {missing_x}")
@@ -2928,7 +3681,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     pair_failed = 0
     single_processed = 0
     single_failed = 0
-    method2_detected = len(candidates) if (method2_enabled or method3_enabled) else 0
+    method2_detected = len(xlsx_candidates) if (method2_enabled or method3_enabled) else 0
     method2_processed = 0
     method2_failed = 0
     method3_produced = 0
@@ -2944,18 +3697,31 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
 
     for x_name, y_name in pairs:
         try:
-            result = process_xy_pair(
-                file_map[x_name],
-                file_map[y_name],
-                x_name,
-                y_name,
-                normalized_options,
-            )
+            kind_x = _candidate_kind(x_name)
+            kind_y = _candidate_kind(y_name)
+            if kind_x == "xlsx" and kind_y == "xlsx":
+                result = process_xy_pair(
+                    file_map[x_name],
+                    file_map[y_name],
+                    x_name,
+                    y_name,
+                    normalized_options,
+                )
+            elif kind_x == "db" and kind_y == "db":
+                result = process_db_pair(
+                    file_map[x_name],
+                    file_map[y_name],
+                    x_name,
+                    y_name,
+                    normalized_options,
+                )
+            else:
+                raise ValueError(f"Mismatched pair types are not supported: {x_name}, {y_name}")
             results.append(result)
             pair_processed += 1
             _log(logs, "info", f"Processed pair: {x_name} + {y_name}")
         except Exception as exc:  # noqa: BLE001
-            if fallback_options is not None and _is_deepest_table_error(exc):
+            if _candidate_kind(x_name) == "xlsx" and fallback_options is not None and _is_deepest_table_error(exc):
                 try:
                     result = process_xy_pair(
                         file_map[x_name],
@@ -2984,16 +3750,26 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     if not fail_fast or not errors:
         for name in singles:
             try:
-                result = process_single_file(
-                    file_map[name],
-                    name,
-                    normalized_options,
-                )
+                kind = _candidate_kind(name)
+                if kind == "xlsx":
+                    result = process_single_file(
+                        file_map[name],
+                        name,
+                        normalized_options,
+                    )
+                elif kind == "db":
+                    result = process_db_single(
+                        file_map[name],
+                        name,
+                        normalized_options,
+                    )
+                else:
+                    raise ValueError(f"Unsupported input file type: {name}")
                 results.append(result)
                 single_processed += 1
                 _log(logs, "info", f"Processed single: {name}")
             except Exception as exc:  # noqa: BLE001
-                if fallback_options is not None and _is_deepest_table_error(exc):
+                if _candidate_kind(name) == "xlsx" and fallback_options is not None and _is_deepest_table_error(exc):
                     try:
                         result = process_single_file(
                             file_map[name],
@@ -3018,7 +3794,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                     break
 
     if (method2_enabled or method3_enabled) and (not fail_fast or not errors):
-        for name in candidates:
+        for name in xlsx_candidates:
             try:
                 extracted = _extract_method2_single(
                     file_map[name],
@@ -3158,6 +3934,8 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             "pairsProcessed": pair_processed,
             "pairsFailed": pair_failed,
             "pairsMissing": len(missing),
+            "dbCandidates": len(db_candidates),
+            "xlsxCandidates": len(xlsx_candidates),
             "singlesDetected": len(singles),
             "singlesProcessed": single_processed,
             "singlesFailed": single_failed,
@@ -3169,6 +3947,8 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             "integrationCompareEnabled": bool(integration_cfg["enabled"]),
             "altIntegrationMethod": integration_cfg["method"] if integration_cfg["enabled"] else None,
             "altLowCutPolicy": ALT_LOWCUT_POLICY if integration_cfg["enabled"] else None,
+            "manualPairingEnabled": bool(manual_pairing_enabled),
+            "manualPairsApplied": len(pairs) if manual_pairing_enabled else 0,
             "method2Detected": method2_detected,
             "method2Processed": method2_processed,
             "method2Failed": method2_failed,
@@ -3189,13 +3969,16 @@ def process_batch_directory(
     out_path.mkdir(parents=True, exist_ok=True)
 
     file_map: Dict[str, bytes] = {}
-    for item in in_path.iterdir():
-        if not item.is_file() or item.suffix.lower() != ".xlsx":
+    for item in in_path.rglob("*"):
+        if not item.is_file():
             continue
         if item.name.startswith("~$"):
             continue
+        if not _is_candidate_file(item.name, include_manip=bool((options or {}).get("includeManip", False))):
+            continue
+        relative_name = item.relative_to(in_path).as_posix()
         try:
-            file_map[item.name] = item.read_bytes()
+            file_map[relative_name] = item.read_bytes()
         except PermissionError:
             continue
 

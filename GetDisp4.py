@@ -16,7 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-dir",
         default=".",
-        help="Directory containing DEEPSOIL result Excel files (default: current directory).",
+        help="Directory containing DEEPSOIL result files (.xlsx or .db/.db3) (default: current directory).",
     )
     parser.add_argument(
         "--output-dir",
@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="fft_regularized",
         help="Alternative integration method when --integration-compare is enabled.",
     )
+    parser.add_argument(
+        "--use-db3-directly",
+        action="store_true",
+        help="Read .db/.db3 displacement tables directly and produce DB Method-2/Method-3 style outputs.",
+    )
     return parser
 
 
@@ -114,6 +119,7 @@ def main() -> int:
         "integrationCompareEnabled": bool(args.integration_compare),
         "includeResultantProfiles": not bool(args.hide_resultant_profiles),
         "altIntegrationMethod": str(args.alt_integration_method),
+        "useDb3Directly": bool(args.use_db3_directly),
     }
 
     summary = process_batch_directory(input_dir, output_dir, options)
@@ -152,6 +158,7 @@ def main() -> int:
         f"method2_enabled={metrics.get('method2Enabled', False)} "
         f"method3_enabled={metrics.get('method3Enabled', False)} "
         f"include_resultant_profiles={metrics.get('includeResultantProfiles', True)} "
+        f"use_db3_directly={metrics.get('useDb3Directly', False)} "
         f"base_reference={metrics.get('baseReference', 'input')} "
         f"integration_compare={metrics.get('integrationCompareEnabled', False)} "
         f"alt_method={metrics.get('altIntegrationMethod', '-')} "

@@ -21,7 +21,7 @@ class _LazyFsFileMap(Mapping[str, bytes]):
     def __init__(self, directory: Path) -> None:
         self._items: Dict[str, Path] = {}
         for item in directory.iterdir():
-            if not item.is_file() or item.suffix.lower() != ".xlsx":
+            if not item.is_file() or item.suffix.lower() not in {".xlsx", ".db", ".db3"}:
                 continue
             if item.name.startswith("~$"):
                 continue
