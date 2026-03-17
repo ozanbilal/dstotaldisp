@@ -412,5 +412,7 @@ Bu nedenle `Comparison` icinde base-corrected kolonlar ayrica verilir.
 
 ## Lisans / Surumleme
 
-Bu repo su an proje-ici arastirma amacli duzende tutuluyor.
-Ihtiyac olursa `LICENSE` ve semantik versiyonlama (`v0.x`) eklenebilir.
+Bu repoda ayri bir `LICENSE` dosyasi bulunmamaktadir.
+Semantik versiyon etiketi kullanilmamaktadir.
+
+
