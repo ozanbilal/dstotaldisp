@@ -360,6 +360,13 @@ Ac:
 
 `http://localhost:8010/web-ui/`
 
+Railway notu:
+
+- Bu proje server-side Python uygulamasi degildir.
+- `disp_core.py`, browser tarafinda Pyodide worker icine yuklenir.
+- Railway uzerinde yayin icin repo kokunde bulunan `Dockerfile` kullanilmalidir.
+- Deploy sonrasi ana adres otomatik olarak `/web-ui/` yoluna yonlenir.
+
 UI ozellikleri:
 
 - Folder select (`webkitdirectory`) + direkt dosya secimi
