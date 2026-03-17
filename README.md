@@ -276,6 +276,8 @@ Not:
 
 - DB direct modunda filtreleme, baseline duzeltme, base reference ve integration compare uygulanmaz.
 - Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla ayrilir; bu nedenle DB mode icin `Folder Select` tercih edilmelidir.
+- Yalniz `.db/.db3` secildiginde web arayuzu DB direct moduna otomatik gecebilir; yalniz `.xlsx` secildiginde tekrar Excel/strain moduna donebilir.
+- UI ozetindeki `Active` degeri secili moda gore islenecek aday sayisini, `Loaded XLSX` ve `Loaded DB` ise yuklenmis toplam dosya turlerini gosterir.
 
 ## Direction vs TBDY Total Farki (Grafikler Neden Farkli?)
 
@@ -361,10 +363,18 @@ Ac:
 UI ozellikleri:
 
 - Folder select (`webkitdirectory`) + direkt dosya secimi
-- Secilen dosya listesi ve pair sayaci
+- Secilen dosya listesi, pair sayaci ve yuklenmis/aktif aday ozetleri
 - `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir
 - `Use DB3 directly`: `.db/.db3` dosyalarinda DEEPSOIL displacement tablolarini dogrudan okur; filter/base-reference kontrollerini kapatir
 - `Use manual pairing`: secilen listedeki X/Y adaylarini elle pair yapar; kalan adaylar single kalir
+- Manuel pairing akisi:
+  - listeden `Pick X` / `Pick Y` ile staged secim
+  - karsi taraf zaten seciliyse ikinci tiklamada pair otomatik eklenir
+  - alternatif olarak `X Candidate` / `Y Candidate` secilip `Add Picked Pair` ile pair eklenebilir
+- Temizleme kontrolleri:
+  - `Clear Picks`: staged X/Y secimini temizler
+  - `Clear Pairs`: manuel pair listesini temizler
+  - `Clear Files`: secili dosyalari, manuel pair state'ini ve mevcut sonuc/metric gorunumunu temizler
 - `Compare with FFT-Regularized integration` (varsayilan kapali)
 - `Include resultant (RSS) totals in Depth_Profiles` (varsayilan kapali)
 - Processing paneli:
@@ -379,6 +389,14 @@ UI ozellikleri:
   - `F Low`, `F High`, `Order`
 - Batch run
 - Tekil cikti indir + toplu ZIP indir
+
+UI notlari:
+
+- `Folder Select` ile DB klasoru secildiginde `.txt` gibi desteklenmeyen yardimci dosyalar secim listesine alinmaz.
+- Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla mantiksal olarak yeniden adlandirilir. Ornek:
+  - `.../Motion_DD1_X_..._H1/deepsoilout.db3` -> `Motion_DD1_X_..._H1.db3`
+  - `.../Motion_DD1_Y_..._H2/deepsoilout.db3` -> `Motion_DD1_Y_..._H2.db3`
+- Uzun dosya adlari icin `Outputs` tablosunda `Pair Key` ve `Output File` hucreleri satir ici kirilarak gosterilir; `Action` kolonu sabit buton genisligini korur.
 
 ## Klasor Yapisi
 
