@@ -2567,14 +2567,17 @@ def _build_db_method2_workbook(
 def _build_db_method3_aggregate_workbook(
     profile_x_df: pd.DataFrame,
     profile_y_df: pd.DataFrame,
+    profile_single_df: pd.DataFrame,
 ) -> bytes:
     x_df = profile_x_df if profile_x_df is not None and not profile_x_df.empty else pd.DataFrame(columns=["Depth_m"])
     y_df = profile_y_df if profile_y_df is not None and not profile_y_df.empty else pd.DataFrame(columns=["Depth_m"])
+    single_df = profile_single_df if profile_single_df is not None and not profile_single_df.empty else pd.DataFrame(columns=["Depth_m"])
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         x_df.to_excel(writer, sheet_name="Method3_DB_Profile_X", index=False)
         y_df.to_excel(writer, sheet_name="Method3_DB_Profile_Y", index=False)
+        single_df.to_excel(writer, sheet_name="Method3_DB_Profile_Single", index=False)
 
         if "Method3_DB_Profile_X" in writer.sheets:
             ws_x = writer.sheets["Method3_DB_Profile_X"]
@@ -2582,6 +2585,9 @@ def _build_db_method3_aggregate_workbook(
         if "Method3_DB_Profile_Y" in writer.sheets:
             ws_y = writer.sheets["Method3_DB_Profile_Y"]
             _add_depth_profile_chart(ws_y, len(y_df), depth_col=1, series_start_col=2)
+        if "Method3_DB_Profile_Single" in writer.sheets:
+            ws_single = writer.sheets["Method3_DB_Profile_Single"]
+            _add_depth_profile_chart(ws_single, len(single_df), depth_col=1, series_start_col=2)
 
     return buffer.getvalue()
 
@@ -2695,6 +2701,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
     method3_produced = 0
     profile_x_frames: List[pd.DataFrame] = []
     profile_y_frames: List[pd.DataFrame] = []
+    profile_single_frames: List[pd.DataFrame] = []
 
     if method2_enabled or method3_enabled:
         for name in db_candidates:
@@ -2710,6 +2717,8 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
                         profile_x_frames.append(profile_df)
                     elif axis == "Y":
                         profile_y_frames.append(profile_df)
+                    else:
+                        profile_single_frames.append(profile_df)
                 _log(logs, "info", f"Processed DB method basis file: {name}")
             except Exception as exc:  # noqa: BLE001
                 method2_failed += 1
@@ -2721,9 +2730,10 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
     if method3_enabled and (not fail_fast or not errors):
         profile_x_df = _merge_profile_frames(profile_x_frames)
         profile_y_df = _merge_profile_frames(profile_y_frames)
-        if not profile_x_df.empty or not profile_y_df.empty:
+        profile_single_df = _merge_profile_frames(profile_single_frames)
+        if not profile_x_df.empty or not profile_y_df.empty or not profile_single_df.empty:
             try:
-                method3_bytes = _build_db_method3_aggregate_workbook(profile_x_df, profile_y_df)
+                method3_bytes = _build_db_method3_aggregate_workbook(profile_x_df, profile_y_df, profile_single_df)
                 results.append(
                     {
                         "pairKey": "DB_METHOD3|ALL",
@@ -2735,11 +2745,13 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
                             "mode": "db_method3_aggregate",
                             "baseReference": "db_direct",
                             "integrationPrimary": "deepsoil_db",
-                            "layerCount": max(int(len(profile_x_df)), int(len(profile_y_df))),
+                            "layerCount": max(int(len(profile_x_df)), int(len(profile_y_df)), int(len(profile_single_df))),
                             "xDepthRows": int(len(profile_x_df)),
                             "yDepthRows": int(len(profile_y_df)),
+                            "singleDepthRows": int(len(profile_single_df)),
                             "xProfileColumns": max(0, int(profile_x_df.shape[1]) - 1),
                             "yProfileColumns": max(0, int(profile_y_df.shape[1]) - 1),
+                            "singleProfileColumns": max(0, int(profile_single_df.shape[1]) - 1),
                             "useDb3Directly": True,
                         },
                     }
@@ -2750,7 +2762,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
                 errors.append({"pairKey": "DB_METHOD3|ALL", "reason": str(exc)})
                 _log(logs, "error", f"Failed DB Method-3 aggregate workbook: {exc}")
         else:
-            _log(logs, "warning", "DB Method-3 aggregate workbook skipped: no valid X/Y DB profiles found.")
+            _log(logs, "warning", "DB Method-3 aggregate workbook skipped: no valid X/Y/Single DB profiles found.")
 
     processed_total = method2_processed + method3_produced
     failed_total = method2_failed
