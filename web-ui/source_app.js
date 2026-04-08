@@ -6,10 +6,10 @@ import {
   normalizeShellMode,
   normalizeViewerChartMode,
   summarizeViewerResults,
-} from "./viewer.mjs?v=20260408b";
-import { detectDirectionInfo, PAIR_SCORE_AUTO_THRESHOLD, resolveDeepsoilPairingCandidates } from "./pairing.mjs?v=20260408b";
+} from "./viewer.mjs?v=20260408c";
+import { detectDirectionInfo, PAIR_SCORE_AUTO_THRESHOLD, resolveDeepsoilPairingCandidates } from "./pairing.mjs?v=20260408c";
 
-const APP_VERSION = "20260408b";
+const APP_VERSION = "20260408c";
 const MANUAL_PAIR_STORAGE_KEY = "deepsoil-total-disp.manual-pairs.v1";
 const SHELL_MODE_STORAGE_KEY = "deepsoil-total-disp.shell-mode.v1";
 const VIEWER_PREFS_STORAGE_KEY = "deepsoil-total-disp.viewer-prefs.v1";
@@ -543,11 +543,13 @@ function applyViewerPrefs(next = {}, { persist = true } = {}) {
 }
 
 function syncSourceViewerSelection() {
+  const requestedFamilyKey = String(state.activeFamilyKey || "").trim();
+  const requestedChartKey = String(state.activeChartKey || "").trim();
   const scene = buildSourceViewerScene(state.sourceCatalog, getViewerPrefsSnapshot());
   state.viewerChartMode = scene.chartMode;
   state.activeSourceId = scene.activeSourceId || "";
-  state.activeFamilyKey = scene.activeFamilyKey || "";
-  state.activeChartKey = scene.activeChartKey || "";
+  if (!requestedFamilyKey || !scene.familyFallback) state.activeFamilyKey = scene.activeFamilyKey || "";
+  if (!requestedChartKey || (!scene.familyFallback && !scene.chartFallback)) state.activeChartKey = scene.activeChartKey || "";
   state.activeLayerIndex = Number.isFinite(Number(scene.activeLayerIndex)) ? Number(scene.activeLayerIndex) : 0;
   state.compareSourceIds = Array.isArray(scene.compareSourceIds) ? [...scene.compareSourceIds] : [];
   updateViewerModeUi();

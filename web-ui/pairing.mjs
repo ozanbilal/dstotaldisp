@@ -163,11 +163,12 @@ function detectDirection(name) {
 function parseGenericAzimuthSuffixToken(value) {
   const upper = String(value || "").trim().toUpperCase();
   if (!upper) return null;
+  if (/^RSN\d+$/i.test(upper)) return null;
   const match = upper.match(/^(.*?)([NS]?)(\d{1,3})([EW]?)$/);
   if (!match) return null;
   const core = String(match[1] || "").replace(/[_-]+$/g, "");
   const azimuth = Number(match[3]);
-  if (!core || !Number.isFinite(azimuth)) return null;
+  if (!core || !Number.isFinite(azimuth) || azimuth < 0 || azimuth > 360) return null;
   const edge = String(match[4] || "");
   const prefix = String(match[2] || "");
   let side = null;

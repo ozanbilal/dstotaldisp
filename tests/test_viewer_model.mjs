@@ -137,6 +137,91 @@ const sampleSourceCatalog = [
       },
     ],
   },
+  {
+    sourceId: "source-c",
+    sourceLabel: "Input C (input-only)",
+    sourceKind: "single",
+    axis: "X",
+    pairKey: "METHOD2|C",
+    artifactPairKeys: ["METHOD2|C"],
+    families: [
+      {
+        familyKey: "input-motion",
+        familyLabel: "Input Motion",
+        chartType: "time",
+        supportsOverlay: true,
+        supportsLayerSelection: false,
+        defaultVisibleSeries: ["input-c"],
+        layers: [],
+        charts: [
+          {
+            chartKey: "input-acceleration",
+            chartLabel: "Input Acceleration",
+            sheetName: "Input Motion",
+            chartType: "time",
+            xLabel: "Time (s)",
+            yLabel: "Acceleration (g)",
+            invertY: false,
+            series: [{ seriesKey: "input-c", name: "Input C", points: [{ x: 0, y: 0.2 }, { x: 1, y: 0.1 }] }],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    sourceId: "source-d",
+    sourceLabel: "Input D",
+    sourceKind: "single",
+    axis: "Y",
+    pairKey: "METHOD2|D",
+    artifactPairKeys: ["METHOD2|D"],
+    families: [
+      {
+        familyKey: "input-motion",
+        familyLabel: "Input Motion",
+        chartType: "time",
+        supportsOverlay: true,
+        supportsLayerSelection: false,
+        defaultVisibleSeries: ["input-d"],
+        layers: [],
+        charts: [
+          {
+            chartKey: "input-acceleration",
+            chartLabel: "Input Acceleration",
+            sheetName: "Input Motion",
+            chartType: "time",
+            xLabel: "Time (s)",
+            yLabel: "Acceleration (g)",
+            invertY: false,
+            series: [{ seriesKey: "input-d", name: "Input D", points: [{ x: 0, y: 0.4 }, { x: 1, y: 0.2 }] }],
+          },
+        ],
+      },
+      {
+        familyKey: "layer-series",
+        familyLabel: "Layer Series",
+        chartType: "time",
+        supportsOverlay: false,
+        supportsLayerSelection: true,
+        defaultVisibleSeries: ["layer-d-1"],
+        layers: [{ layerIndex: 0, layerLabel: "Layer 1", depth: 0.0 }],
+        charts: [
+          {
+            chartKey: "layer-displacement",
+            chartLabel: "Layer Displacement",
+            sheetName: "Layer",
+            chartType: "time",
+            xLabel: "Time (s)",
+            yLabel: "Displacement (m)",
+            invertY: false,
+            layerViews: [
+              { layerIndex: 0, layerLabel: "Layer 1", depth: 0.0, series: [{ seriesKey: "layer-d-1", name: "D-L1", points: [{ x: 0, y: 0 }, { x: 1, y: 0.6 }] }] },
+            ],
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 assert.equal(normalizeShellMode("viewer"), "viewer");
@@ -183,6 +268,26 @@ assert.equal(layerScene.activeLayerIndex, 1);
 assert.equal(layerScene.activeLayerCount, 2);
 assert.equal(layerScene.activeLayerLabel, "Layer 2");
 assert.equal(layerScene.plotSeriesEntries.length, 1);
+
+const fallbackScene = buildSourceViewerScene(sampleSourceCatalog, {
+  activeSourceId: "source-c",
+  activeFamilyKey: "layer-series",
+  activeChartKey: "layer-displacement",
+});
+assert.equal(fallbackScene.activeFamilyKey, "input-motion");
+assert.equal(fallbackScene.activeChartKey, "input-acceleration");
+assert.equal(fallbackScene.familyFallback, true);
+assert.equal(fallbackScene.chartFallback, true);
+
+const recoverScene = buildSourceViewerScene(sampleSourceCatalog, {
+  activeSourceId: "source-d",
+  activeFamilyKey: "layer-series",
+  activeChartKey: "layer-displacement",
+});
+assert.equal(recoverScene.activeFamilyKey, "layer-series");
+assert.equal(recoverScene.activeChartKey, "layer-displacement");
+assert.equal(recoverScene.familyFallback, false);
+assert.equal(recoverScene.chartFallback, false);
 
 const nextSource = cycleSceneItem(defaultScene.sources, "source-a", 1, (source) => source.sourceId);
 assert.equal(nextSource.sourceId, "source-b");

@@ -357,9 +357,13 @@ function buildSourceViewerScene(sourceCatalog, selection = {}) {
   const activeSourceIndex = sources.findIndex((source) => source.sourceId === activeSource.sourceId);
 
   const requestedFamilyKey = String(selection?.activeFamilyKey || "").trim();
-  const activeFamily = findFamily(activeSource, requestedFamilyKey) || activeSource.families[0] || null;
+  const requestedFamily = findFamily(activeSource, requestedFamilyKey);
+  const activeFamily = requestedFamily || activeSource.families[0] || null;
+  const familyFallback = !!requestedFamilyKey && !requestedFamily;
   const requestedChartKey = String(selection?.activeChartKey || "").trim();
-  const activeChart = activeFamily?.charts?.find((chart) => chart.chartKey === requestedChartKey) || activeFamily?.charts?.[0] || null;
+  const requestedChart = activeFamily?.charts?.find((chart) => chart.chartKey === requestedChartKey) || null;
+  const activeChart = requestedChart || activeFamily?.charts?.[0] || null;
+  const chartFallback = !!requestedChartKey && !requestedChart;
   const chartState = getChartSeries(activeChart, selection?.activeLayerIndex);
 
   const compareCandidates = sources.filter((source) => {
@@ -391,8 +395,10 @@ function buildSourceViewerScene(sourceCatalog, selection = {}) {
     activeSourceIndex,
     activeFamily,
     activeFamilyKey: activeFamily?.familyKey || "",
+    familyFallback,
     activeChart,
     activeChartKey: activeChart?.chartKey || "",
+    chartFallback,
     activeLayerIndex: chartState.layerIndex,
     activeLayerLabel: chartState.layerLabel,
     activeLayerCount: chartState.layerCount,

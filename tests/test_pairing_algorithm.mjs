@@ -20,5 +20,7 @@ assert.deepEqual(pairKeys, [
 assert.equal(resolved.leftovers.length, 0);
 assert.equal(detectDirectionInfo(sampleFiles[0].name).side, "X");
 assert.equal(detectDirectionInfo(sampleFiles[1].name).side, "Y");
+assert.equal(detectDirectionInfo("Results_profile_1_motion_RSN801_LOMAP_SJTE225.xlsx").side, "X");
+assert.equal(detectDirectionInfo("Results_profile_1_motion_RSN801_LOMAP_SJTE315.xlsx").side, "Y");
 
 console.log("pairing algorithm test passed");

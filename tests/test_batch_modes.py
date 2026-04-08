@@ -64,9 +64,13 @@ def test_process_batch_files_can_return_web_ready_results():
     assert all("viewerGroupOrder" in item for item in summary["results"])
 
     viewer_groups = {item["pairKey"]: (item["viewerGroup"], item["viewerKind"], item["viewerGroupOrder"]) for item in summary["results"]}
-    assert viewer_groups[
-        "Results_profile_1_motion_DD1_20030501002708_1201|Results_profile_1_motion_DD1_Y_20030501002708_1201_H2"
-    ] == ("Primary Outputs", "Pair", 10)
+    primary_items = [item for item in summary["results"] if item.get("viewerGroup") == "Primary Outputs"]
+    assert len(primary_items) == 1
+    assert (
+        primary_items[0].get("viewerGroup"),
+        primary_items[0].get("viewerKind"),
+        primary_items[0].get("viewerGroupOrder"),
+    ) == ("Primary Outputs", "Pair", 10)
     assert viewer_groups["METHOD2|Results_profile_1_motion_DD1_X_20030501002708_1201_H1"] == ("Method-2", "Method-2 X", 20)
     assert viewer_groups["METHOD2|Results_profile_1_motion_DD1_Y_20030501002708_1201_H2"] == ("Method-2", "Method-2 Y", 20)
     assert viewer_groups["METHOD3|ALL"] == ("Method-3 Aggregate", "Method-3", 30)

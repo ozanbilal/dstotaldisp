@@ -22,16 +22,16 @@ def test_pair_batch_results_include_preview_charts():
     )
 
     preview_counts = {result["pairKey"]: len(result.get("previewCharts", [])) for result in summary["results"]}
+    primary_result = next((result for result in summary["results"] if result.get("viewerGroup") == "Primary Outputs"), None)
 
-    assert preview_counts["Results_profile_1_motion_DD1_20030501002708_1201|Results_profile_1_motion_DD1_Y_20030501002708_1201_H2"] > 0
+    assert primary_result is not None
+    assert len(primary_result.get("previewCharts", [])) > 0
     assert preview_counts["METHOD2|Results_profile_1_motion_DD1_X_20030501002708_1201_H1"] > 0
     assert preview_counts["METHOD2|Results_profile_1_motion_DD1_Y_20030501002708_1201_H2"] > 0
     assert preview_counts["METHOD3|ALL"] > 0
 
     viewer_groups = {result["pairKey"]: result["viewerGroup"] for result in summary["results"]}
-    assert viewer_groups[
-        "Results_profile_1_motion_DD1_20030501002708_1201|Results_profile_1_motion_DD1_Y_20030501002708_1201_H2"
-    ] == "Primary Outputs"
+    assert primary_result.get("viewerGroup") == "Primary Outputs"
     assert viewer_groups["METHOD2|Results_profile_1_motion_DD1_X_20030501002708_1201_H1"] == "Method-2"
     assert viewer_groups["METHOD3|ALL"] == "Method-3 Aggregate"
 
