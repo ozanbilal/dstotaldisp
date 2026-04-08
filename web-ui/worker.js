@@ -1,15 +1,14 @@
 const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v0.27.3/full/";
-const APP_VERSION = "20260316c";
+const APP_VERSION = "20260408b";
 
 importScripts(`${PYODIDE_BASE}pyodide.js`);
 
 let pyodide = null;
 let runBatchFromFs = null;
-let buildZipFromResults = null;
 let initPromise = null;
 
-function postStatus(message, phase = "info") {
-  self.postMessage({ type: "status", payload: { phase, message } });
+function postStatus(message, phase = "info", progress = null, indeterminate = false) {
+  self.postMessage({ type: "status", payload: { phase, message, progress, indeterminate } });
 }
 
 function sanitizeFileName(name, index) {
@@ -50,21 +49,21 @@ async function ensureInitialized() {
   }
 
   initPromise = (async () => {
-    postStatus("Pyodide yukleniyor...", "boot");
+    postStatus("Pyodide yukleniyor...", "boot", 8);
     pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
 
-    postStatus("Numpy/Pandas/SQLite paketleri yukleniyor...", "boot");
+    postStatus("Numpy/Pandas/SQLite paketleri yukleniyor...", "boot", 24);
     try {
       await pyodide.loadPackage(["numpy", "pandas", "sqlite3"]);
     } catch (err) {
-      postStatus("Temel paketler yuklenemedi, tekrar deniyorum...", "boot");
+      postStatus("Temel paketler yuklenemedi, tekrar deniyorum...", "boot", 28, true);
       await pyodide.loadPackage(["numpy", "pandas", "sqlite3", "micropip"]);
     }
 
     try {
       await pyodide.loadPackage(["openpyxl"]);
     } catch (err) {
-      postStatus("openpyxl paketini micropip ile yukluyorum...", "boot");
+      postStatus("openpyxl paketini micropip ile yukluyorum...", "boot", 42, true);
       await pyodide.loadPackage(["micropip"]);
       await pyodide.runPythonAsync(`
 import micropip
@@ -72,7 +71,7 @@ await micropip.install("openpyxl")
 `);
     }
 
-    postStatus("Python modulleri yukleniyor...", "boot");
+    postStatus("Python modulleri yukleniyor...", "boot", 62);
 
     const [coreResp, entryResp] = await Promise.all([
       fetch(`../disp_core.py?v=${APP_VERSION}`),
@@ -100,13 +99,12 @@ await micropip.install("openpyxl")
 import sys
 if "/app" not in sys.path:
     sys.path.insert(0, "/app")
-from pyodide_entry import run_batch_from_fs, build_zip_from_results
+from pyodide_entry import run_batch_from_fs
 `);
 
     runBatchFromFs = pyodide.globals.get("run_batch_from_fs");
-    buildZipFromResults = pyodide.globals.get("build_zip_from_results");
 
-    postStatus("Hazir", "ready");
+    postStatus("Hazir", "ready", 100);
   })();
 
   return initPromise;
@@ -158,7 +156,7 @@ async function handleRunBatch(payload) {
     return;
   }
 
-  postStatus(`Dosyalar worker FS'e yaziliyor (${files.length})...`, "run");
+  postStatus(`Dosyalar worker FS'e yaziliyor (0/${files.length})...`, "run", 10);
   resetInputFs();
 
   const usedNames = new Set();
@@ -181,22 +179,47 @@ async function handleRunBatch(payload) {
     const bytes = await toUint8Array(file);
     pyodide.FS.writeFile(`/input/${finalName}`, bytes);
     if ((idx + 1) % 10 === 0 || idx + 1 === files.length) {
-      postStatus(`Dosyalar worker FS'e yaziliyor (${idx + 1}/${files.length})...`, "run");
+      const progress = 10 + Math.round(((idx + 1) / files.length) * 35);
+      postStatus(`Dosyalar worker FS'e yaziliyor (${idx + 1}/${files.length})...`, "run", progress);
     }
   }
 
-  postStatus("Hesaplama calisiyor...", "run");
+  postStatus("Hesaplama calisiyor...", "run", 55, true);
 
   const pyOptions = pyodide.toPy(options);
-  const pyResult = runBatchFromFs("/input", pyOptions);
-  const jsResult = pyResult.toJs({ dict_converter: Object.fromEntries });
+  const progressCallback = (message, phase = "run", progress = null, indeterminate = false) => {
+    const numericProgress = Number(progress);
+    postStatus(
+      String(message || "Hesaplama calisiyor..."),
+      String(phase || "run"),
+      Number.isFinite(numericProgress) ? numericProgress : null,
+      !!indeterminate
+    );
+  };
 
-  if (pyOptions && typeof pyOptions.destroy === "function") {
-    pyOptions.destroy();
+  let pyResult = null;
+  let jsResult = null;
+  try {
+    pyResult = runBatchFromFs("/input", pyOptions, progressCallback);
+    jsResult = pyResult.toJs({ dict_converter: Object.fromEntries });
+    postStatus("Sonuclar hazirlaniyor...", "run", 92);
+  } finally {
+    try {
+      if (pyOptions && typeof pyOptions.destroy === "function") {
+        pyOptions.destroy();
+      }
+    } catch (err) {
+      // Best-effort cleanup only. Pyodide can already be in a bad state here.
+    }
+    try {
+      if (pyResult && typeof pyResult.destroy === "function") {
+        pyResult.destroy();
+      }
+    } catch (err) {
+      // Best-effort cleanup only. Pyodide can already be in a bad state here.
+    }
   }
-  if (pyResult && typeof pyResult.destroy === "function") {
-    pyResult.destroy();
-  }
+
   try {
     pyodide.runPython("import gc; gc.collect()");
   } catch (err) {
@@ -204,28 +227,7 @@ async function handleRunBatch(payload) {
   }
 
   self.postMessage({ type: "runBatchResult", payload: jsResult });
-  postStatus("Batch tamamlandi", "ready");
-}
-
-async function handleZipOutputs(payload) {
-  await ensureInitialized();
-
-  const items = Array.isArray(payload?.results) ? payload.results : [];
-  postStatus("ZIP olusturuluyor...", "zip");
-
-  const pyItems = pyodide.toPy(items);
-  const zipB64 = buildZipFromResults(pyItems);
-  const zipString = typeof zipB64 === "string" ? zipB64 : zipB64.toString();
-
-  if (pyItems && typeof pyItems.destroy === "function") {
-    pyItems.destroy();
-  }
-  if (zipB64 && typeof zipB64.destroy === "function") {
-    zipB64.destroy();
-  }
-
-  self.postMessage({ type: "zipReady", payload: { fileName: payload?.fileName || "deepsoil_outputs.zip", zipBytesB64: zipString } });
-  postStatus("ZIP hazir", "ready");
+  postStatus("Batch tamamlandi", "ready", 100);
 }
 
 self.onmessage = async (event) => {
@@ -243,11 +245,6 @@ self.onmessage = async (event) => {
       return;
     }
 
-    if (type === "zipOutputs") {
-      await handleZipOutputs(payload);
-      return;
-    }
-
     self.postMessage({ type: "error", payload: { message: `Unknown worker message type: ${type}` } });
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
@@ -255,6 +252,6 @@ self.onmessage = async (event) => {
       ? "memory access out of bounds (WASM bellek limiti asildi). Daha az dosya secip partlar halinde calistirin."
       : rawMessage;
     self.postMessage({ type: "error", payload: { message } });
-    postStatus(`Hata: ${message}`, "error");
+    postStatus(`Hata: ${message}`, "error", 0);
   }
 };

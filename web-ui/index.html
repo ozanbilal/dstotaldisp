@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DEEPSOIL Total Displacement Lab</title>
+    <title>DEEPSOIL Source Viewer</title>
     <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,220 +11,438 @@
       href="https://fonts.googleapis.com/css2?family=Syne:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260317f" />
+    <link rel="stylesheet" href="./styles.css?v=20260408b" />
   </head>
-  <body>
+  <body data-shell-mode="viewer">
     <main class="shell">
       <header class="hero">
-        <p class="eyebrow">Pyodide / WASM Client-Side</p>
-        <h1>Total Displacement Lab</h1>
-        <p class="subtitle">
-          Klasor veya dosya sec, X/Y ciftlerini otomatik bul, Strain + Legacy metodlarini tek seferde hesapla.
-        </p>
+        <div class="hero-copy">
+          <p class="eyebrow">DEEPSOIL Source Viewer</p>
+          <h1>Raw source curves first</h1>
+          <p class="subtitle">
+            Yüklenen <code>.xlsx</code> ve <code>.db/.db3</code> kaynaklarından input motion, profile, layer ve türetilmiş eğrileri tek büyük sahnede incele. Workbook çıktıları ve ZIP export ikincil artifact olarak kalır.
+          </p>
+        </div>
+        <div class="hero-controls">
+          <div class="viewer-switcher__tabs" role="tablist" aria-label="Shell mode">
+            <button id="viewer-mode-btn" type="button" class="ghost viewer-switcher__tab active" role="tab" aria-selected="true">Viewer</button>
+            <button id="legacy-mode-btn" type="button" class="ghost viewer-switcher__tab" role="tab" aria-selected="false">Legacy</button>
+          </div>
+          <p id="viewer-switcher-hint" class="subtitle subtitle--compact">
+            Viewer modu kaynak eğrilere odaklanır. Legacy modu pairing, filter ve batch analysis ayarlarını açar.
+          </p>
+        </div>
       </header>
 
-      <section class="panel controls">
-        <div class="control-grid">
-          <div class="picker-stack">
-            <label class="file-picker" data-kind="folder">
-              <input id="folderInput" type="file" webkitdirectory directory multiple />
-              <span>Folder Select</span>
-            </label>
-            <label class="file-picker" data-kind="files">
-              <input id="fileInput" type="file" accept=".xlsx,.db,.db3" multiple />
-              <span>File Select (.xlsx/.db/.db3)</span>
-            </label>
-          </div>
+      <div class="status-row">
+        <div class="status-chip">
+          <span>Status</span>
+          <strong id="statusText">Initializing...</strong>
+        </div>
+        <div class="status-chip">
+          <span>Pair Scan</span>
+          <strong id="pairStats">Pairs: 0 | Singles: 0 | Missing Y: 0</strong>
+        </div>
+        <div class="status-chip">
+          <span>Candidate Files</span>
+          <strong id="countStats">Active: 0 | Loaded XLSX: 0 | Loaded DB: 0</strong>
+        </div>
+      </div>
 
-          <div class="toggles">
-            <label><input id="failFast" type="checkbox" /> fail-fast</label>
-            <label><input id="method2Enabled" type="checkbox" checked /> Method-2 outputs</label>
-            <label><input id="method3Enabled" type="checkbox" checked /> Method-3 outputs</label>
-            <label><input id="useDb3Directly" type="checkbox" /> Use DB3 directly</label>
-            <label><input id="manualPairingEnabled" type="checkbox" /> Use manual pairing</label>
-            <label><input id="integrationCompareEnabled" type="checkbox" /> Compare with FFT-Regularized integration</label>
-            <label><input id="includeResultantProfiles" type="checkbox" /> Include resultant (RSS) totals in Depth_Profiles</label>
-            <small class="toggle-hint">DB3 direct mode reads DEEPSOIL displacement tables directly and disables filter/base-reference controls.</small>
-            <small class="toggle-hint">Manual pairing aciksa sectigin X/Y ciftleri override edilir; kalan adaylar single olarak islenir.</small>
-            <small class="toggle-hint">Alt low-cut: filtering on -> F Low, filtering off -> 0.05 Hz.</small>
-          </div>
+      <div id="progressPanel" class="progress-panel">
+        <div class="progress-header">
+          <span id="progressLabel">Initializing worker...</span>
+          <strong id="progressValue">...</strong>
+        </div>
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar is-indeterminate"></div>
+        </div>
+      </div>
 
-          <div class="filter-controls">
-            <p>Processing Filter</p>
-            <div class="filter-grid">
-              <label class="check-line">
-                <input id="baselineOn" type="checkbox" />
-                Apply Baseline
+      <div class="viewer-layout">
+        <aside class="side-panel side-panel--left">
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Sources</p>
+                <h2>Loaded sources</h2>
+              </div>
+              <strong id="sourceMeta">0 sources</strong>
+            </div>
+            <div id="sourceList" class="source-list">
+              <div class="empty-block">Henüz source catalog yok. Dosyaları seçip batch çalıştır.</div>
+            </div>
+          </section>
+
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Families</p>
+                <h2>Active source families</h2>
+              </div>
+              <strong id="familyMeta">0 families</strong>
+            </div>
+            <div id="familyList" class="family-list">
+              <div class="empty-block">Aktif source seçildiğinde family listesi burada görünür.</div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="main-stage">
+          <section class="panel stage-panel">
+            <div class="stage-topbar">
+              <div class="stage-copy">
+                <p class="eyebrow">Stage</p>
+                <h2 id="stageTitle">Focused chart</h2>
+                <div id="stageSubtitle" class="stage-subtitle">Kaynak eğriler için hazır.</div>
+              </div>
+              <div class="stage-summary">
+                <span id="catalogMeta">0 sources</span>
+              </div>
+            </div>
+
+            <div class="stage-nav">
+              <div class="nav-block">
+                <span>Source</span>
+                <div class="nav-buttons">
+                  <button id="sourcePrevBtn" type="button" class="ghost small-btn">←</button>
+                  <strong id="sourceCounter">0 / 0</strong>
+                  <button id="sourceNextBtn" type="button" class="ghost small-btn">→</button>
+                </div>
+              </div>
+              <div class="nav-block">
+                <span>Chart</span>
+                <div class="nav-buttons">
+                  <button id="chartPrevBtn" type="button" class="ghost small-btn">←</button>
+                  <strong id="chartCounter">0 / 0</strong>
+                  <button id="chartNextBtn" type="button" class="ghost small-btn">→</button>
+                </div>
+              </div>
+              <div class="nav-block">
+                <span>Layer</span>
+                <div class="nav-buttons">
+                  <button id="layerPrevBtn" type="button" class="ghost small-btn">←</button>
+                  <strong id="layerCounter">-</strong>
+                  <button id="layerNextBtn" type="button" class="ghost small-btn">→</button>
+                </div>
+              </div>
+              <div class="nav-block nav-block--mode">
+                <span>View</span>
+                <div class="nav-buttons mode-buttons">
+                  <button id="viewer-focus-btn" type="button" class="ghost active">Focus</button>
+                  <button id="viewer-compare-btn" type="button" class="ghost">Overlay</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-header-cards">
+              <div class="stage-chip">
+                <span>Source</span>
+                <strong id="activeSourceLabel">-</strong>
+              </div>
+              <div class="stage-chip">
+                <span>Family</span>
+                <strong id="activeFamilyLabel">-</strong>
+              </div>
+              <div class="stage-chip">
+                <span>Chart</span>
+                <strong id="activeChartLabel">-</strong>
+              </div>
+              <div class="stage-chip">
+                <span>Layer</span>
+                <strong id="activeLayerLabel">-</strong>
+              </div>
+            </div>
+
+            <div class="axis-controls">
+              <div class="axis-control-block">
+                <span>Spectrum max period (s)</span>
+                <div class="axis-control-row">
+                  <input id="periodMaxInput" type="number" min="0.01" step="0.01" placeholder="auto" />
+                  <button id="periodMaxResetBtn" type="button" class="ghost small-btn">Reset</button>
+                </div>
+              </div>
+              <div class="axis-control-block axis-control-block--toggles">
+                <label><input id="logXToggle" type="checkbox" /> Log X</label>
+                <label><input id="logYToggle" type="checkbox" /> Log Y</label>
+              </div>
+            </div>
+
+            <div id="plotHost" class="plot-host">
+              <div class="empty-block empty-block--plot">Grafik sahnesi burada görünecek.</div>
+            </div>
+          </section>
+        </section>
+
+        <aside class="side-panel side-panel--right">
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Navigator</p>
+                <h2>Charts in active source</h2>
+              </div>
+              <strong id="chartMeta">0 charts</strong>
+            </div>
+            <div id="chartList" class="chart-list">
+              <div class="empty-block">Aktif source seçildiğinde chart listesi burada görünür.</div>
+            </div>
+          </section>
+
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Compare</p>
+                <h2>Overlay sources</h2>
+              </div>
+              <strong id="compareMeta">0 selected</strong>
+            </div>
+            <div class="compare-axis-controls">
+              <label><input id="compareAxisXToggle" type="checkbox" /> Select X</label>
+              <label><input id="compareAxisYToggle" type="checkbox" /> Select Y</label>
+              <button id="compareClearBtn" type="button">Clear</button>
+            </div>
+            <div id="compareSourceList" class="toggle-list">
+              <div class="empty-block">Aynı family/chart eşleşen kaynaklar burada listelenir.</div>
+            </div>
+          </section>
+
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Series</p>
+                <h2>Visible traces</h2>
+              </div>
+              <strong id="seriesMeta">0 traces</strong>
+            </div>
+            <div id="seriesToggleList" class="toggle-list">
+              <div class="empty-block">Aktif chart için trace toggle listesi burada görünür.</div>
+            </div>
+          </section>
+        </aside>
+
+        <aside class="side-panel side-panel--utility">
+          <section class="panel compact-panel run-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Run</p>
+                <h2>Inputs & artifacts</h2>
+              </div>
+            </div>
+
+            <div class="picker-stack">
+              <label class="file-picker" data-kind="folder">
+                <input id="folderInput" type="file" webkitdirectory directory multiple />
+                <span>Folder Select</span>
               </label>
-              <label class="check-line">
-                <input id="filterOn" type="checkbox" />
-                Apply Filtering
-              </label>
-              <label>
-                Base Reference
-                <select id="baseReference">
-                  <option value="input" selected>Input Motion Proxy</option>
-                  <option value="deepest_layer">Deepest Layer Proxy</option>
-                </select>
-              </label>
-              <label>
-                Processing Order
-                <select id="processingOrder">
-                  <option value="filter_then_baseline" selected>Filtering → Baseline</option>
-                  <option value="baseline_then_filter">Baseline → Filtering</option>
-                </select>
-              </label>
-              <label>
-                Filter Domain
-                <select id="filterDomain">
-                  <option value="time" selected>Time Domain</option>
-                  <option value="frequency">Frequency Domain</option>
-                </select>
-              </label>
-              <label>
-                Baseline Method
-                <select id="baselineMethod">
-                  <option value="poly4" selected>poly4</option>
-                  <option value="poly3">poly3</option>
-                  <option value="poly2">poly2</option>
-                  <option value="mean">mean</option>
-                  <option value="none">none</option>
-                </select>
-              </label>
-              <label>
-                Filter Config
-                <select id="filterConfig">
-                  <option value="bandpass" selected>bandpass</option>
-                  <option value="highpass">highpass</option>
-                  <option value="lowpass">lowpass</option>
-                  <option value="bandstop">bandstop</option>
-                </select>
-              </label>
-              <label>
-                Filter Type
-                <select id="filterType">
-                  <option value="butter" selected>butter</option>
-                  <option value="cheby">cheby</option>
-                  <option value="bessel">bessel</option>
-                </select>
-              </label>
-              <label>
-                F Low (Hz)
-                <input id="fLowHz" type="number" min="0" step="0.01" value="0.1" />
-              </label>
-              <label>
-                F High (Hz)
-                <input id="fHighHz" type="number" min="0" step="0.1" value="25" />
-              </label>
-              <label>
-                Order
-                <input id="filterOrder" type="number" min="1" step="1" value="4" />
+              <label class="file-picker" data-kind="files">
+                <input id="fileInput" type="file" accept=".xlsx,.db,.db3" multiple />
+                <span>File Select (.xlsx/.db/.db3)</span>
               </label>
             </div>
-          </div>
 
-          <div class="action-buttons">
-            <button id="runBtn" disabled>Run Batch</button>
-            <button id="zipBtn" disabled>Download ZIP</button>
-          </div>
-        </div>
-
-        <div class="status-row">
-          <div class="status-chip">
-            <span>Status</span>
-            <strong id="statusText">Initializing...</strong>
-          </div>
-          <div class="status-chip">
-            <span>Pair Scan</span>
-            <strong id="pairStats">Pairs: 0 | Singles: 0 | Missing Y: 0</strong>
-          </div>
-          <div class="status-chip">
-            <span>Candidate Files</span>
-            <strong id="countStats">Active: 0 | Loaded XLSX: 0 | Loaded DB: 0</strong>
-          </div>
-        </div>
-
-        <div class="selected-files">
-          <div class="selected-files-header">
-            <span>Selected Files</span>
-            <div class="header-actions">
-              <strong id="selectedFilesMeta">0 files | 0.00 MB</strong>
-              <button id="clearFilesBtn" type="button">Clear Files</button>
+            <div class="action-buttons compact-actions">
+              <button id="runBtn" disabled>Run Batch</button>
+              <button id="zipBtn" disabled>Download ZIP</button>
+              <button id="clearAllBtn" type="button">Clear All</button>
             </div>
-          </div>
-          <ul id="selectedFilesList" class="selected-files-list">
-            <li class="empty">No files selected.</li>
-          </ul>
-        </div>
 
-        <div id="manualPairPanel" class="manual-pairs">
-          <div class="manual-pairs-header">
-            <span>Manual Pairs</span>
-            <div class="header-actions">
-              <strong id="manualPairMeta">0 pairs</strong>
-              <button id="clearPairsBtn" type="button">Clear Pairs</button>
-            </div>
-          </div>
-          <div class="manual-pair-stage">
-            <div class="manual-stage-card">
-              <span>Picked X</span>
-              <strong id="manualStageX">No X picked</strong>
-            </div>
-            <div class="manual-stage-card">
-              <span>Picked Y</span>
-              <strong id="manualStageY">No Y picked</strong>
-            </div>
-            <button id="clearManualStageBtn" type="button">Clear Picks</button>
-          </div>
-          <div class="manual-pair-builder">
-            <label>
-              X Candidate
-              <select id="manualXSelect"></select>
-            </label>
-            <label>
-              Y Candidate
-              <select id="manualYSelect"></select>
-            </label>
-            <button id="addManualPairBtn" type="button">Add Picked Pair</button>
-          </div>
-          <small class="toggle-hint">Listeden Pick X / Pick Y sec. Karsi taraf zaten seciliyse ikinci tiklamada pair aninda eklenir.</small>
-          <ul id="manualPairList" class="manual-pair-list">
-            <li class="empty">Manual pairing kapali.</li>
-          </ul>
-        </div>
-      </section>
+            <details class="drawer" open>
+              <summary>
+                <span>Selected files</span>
+                <strong id="selectedFilesMeta">0 files | 0.00 MB</strong>
+              </summary>
+              <div class="drawer-actions">
+                <button id="clearFilesBtn" type="button">Clear Files</button>
+              </div>
+              <ul id="selectedFilesList" class="selected-files-list">
+                <li class="empty">No files selected.</li>
+              </ul>
+            </details>
 
-      <section class="panel metrics">
-        <h2>Batch Metrics</h2>
-        <div id="metricCards" class="metric-grid"></div>
-      </section>
+            <details class="drawer">
+              <summary>
+                <span>Artifacts</span>
+                <strong id="resultPreviewMeta">0 outputs</strong>
+              </summary>
+              <div id="resultPreviewDeck" class="artifact-summary"></div>
+              <div class="table-wrap compact-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Group</th>
+                      <th>Pair Key</th>
+                      <th>Mode</th>
+                      <th>Output File</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="resultTableBody"></tbody>
+                </table>
+              </div>
+            </details>
 
-      <section class="panel results">
-        <h2>Outputs</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Pair Key</th>
-                <th>Mode</th>
-                <th>Output File</th>
-                <th>Layers</th>
-                <th>Surface Base (m)</th>
-                <th>Profile RSS (m)</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody id="resultTableBody"></tbody>
-          </table>
-        </div>
-      </section>
+            <details class="drawer">
+              <summary>
+                <span>Run summary</span>
+                <strong id="metricMeta">0 stats</strong>
+              </summary>
+              <div id="metricCards" class="metric-stack"></div>
+            </details>
 
-      <section class="panel logs">
-        <h2>Runtime Log</h2>
-        <pre id="logBox"></pre>
-      </section>
+            <details class="drawer">
+              <summary>
+                <span>Worker trace</span>
+                <strong>logs</strong>
+              </summary>
+              <pre id="logBox"></pre>
+            </details>
+
+            <details id="legacyDrawer" class="drawer legacy-only">
+              <summary>
+                <span>Legacy analysis</span>
+                <strong>controls</strong>
+              </summary>
+
+              <div class="toggles legacy-grid">
+                <label><input id="failFast" type="checkbox" /> fail-fast</label>
+                <label><input id="method2Enabled" type="checkbox" checked /> Method-2 outputs</label>
+                <label><input id="method3Enabled" type="checkbox" checked /> Method-3 outputs</label>
+                <label><input id="useDb3Directly" type="checkbox" /> Use DB3 directly</label>
+                <label><input id="manualPairingEnabled" type="checkbox" /> Use manual pairing</label>
+                <label><input id="integrationCompareEnabled" type="checkbox" /> Compare with FFT-Regularized integration</label>
+                <label><input id="includeResultantProfiles" type="checkbox" /> Include resultant (RSS) totals in Depth_Profiles</label>
+                <small class="toggle-hint">DB3 direct mode displacement tablolarını doğrudan okur.</small>
+                <small class="toggle-hint">Legacy alanı batch analysis davranışını değiştirir; viewer varsayılan yüzey değildir.</small>
+              </div>
+
+              <div class="filter-controls">
+                <p>Processing Filter</p>
+                <div class="filter-grid">
+                  <label class="check-line">
+                    <input id="baselineOn" type="checkbox" />
+                    Apply Baseline
+                  </label>
+                  <label class="check-line">
+                    <input id="filterOn" type="checkbox" />
+                    Apply Filtering
+                  </label>
+                  <label>
+                    Base Reference
+                    <select id="baseReference">
+                      <option value="input" selected>Input Motion Proxy</option>
+                      <option value="deepest_layer">Deepest Layer Proxy</option>
+                    </select>
+                  </label>
+                  <label>
+                    Processing Order
+                    <select id="processingOrder">
+                      <option value="filter_then_baseline" selected>Filtering → Baseline</option>
+                      <option value="baseline_then_filter">Baseline → Filtering</option>
+                    </select>
+                  </label>
+                  <label>
+                    Filter Domain
+                    <select id="filterDomain">
+                      <option value="time" selected>Time Domain</option>
+                      <option value="frequency">Frequency Domain</option>
+                    </select>
+                  </label>
+                  <label>
+                    Baseline Method
+                    <select id="baselineMethod">
+                      <option value="poly4" selected>poly4</option>
+                      <option value="poly3">poly3</option>
+                      <option value="poly2">poly2</option>
+                      <option value="mean">mean</option>
+                      <option value="none">none</option>
+                    </select>
+                  </label>
+                  <label>
+                    Filter Config
+                    <select id="filterConfig">
+                      <option value="bandpass" selected>bandpass</option>
+                      <option value="highpass">highpass</option>
+                      <option value="lowpass">lowpass</option>
+                      <option value="bandstop">bandstop</option>
+                    </select>
+                  </label>
+                  <label>
+                    Filter Type
+                    <select id="filterType">
+                      <option value="butter" selected>butter</option>
+                      <option value="cheby">cheby</option>
+                      <option value="bessel">bessel</option>
+                    </select>
+                  </label>
+                  <label>
+                    F Low (Hz)
+                    <input id="fLowHz" type="number" min="0" step="0.01" value="0.1" />
+                  </label>
+                  <label>
+                    F High (Hz)
+                    <input id="fHighHz" type="number" min="0" step="0.1" value="25" />
+                  </label>
+                  <label>
+                    Order
+                    <input id="filterOrder" type="number" min="1" step="1" value="4" />
+                  </label>
+                </div>
+              </div>
+
+              <div id="manualPairPanel" class="manual-pairs">
+                <div class="manual-pairs-header">
+                  <span>Manual Pairs</span>
+                  <div class="header-actions">
+                    <strong id="manualPairMeta">0 pairs</strong>
+                    <button id="autoPairBtn" type="button">Auto Pair</button>
+                    <button id="clearPairsBtn" type="button">Clear Pairs</button>
+                  </div>
+                </div>
+                <div class="manual-pair-stage">
+                  <div class="manual-stage-card">
+                    <span>Picked X</span>
+                    <strong id="manualStageX">No X picked</strong>
+                  </div>
+                  <div class="manual-stage-card">
+                    <span>Picked Y</span>
+                    <strong id="manualStageY">No Y picked</strong>
+                  </div>
+                  <button id="clearManualStageBtn" type="button">Clear Picks</button>
+                </div>
+                <div class="manual-pair-builder">
+                  <label>
+                    X Candidate
+                    <select id="manualXSelect"></select>
+                  </label>
+                  <label>
+                    Y Candidate
+                    <select id="manualYSelect"></select>
+                  </label>
+                  <button id="addManualPairBtn" type="button">Add Picked Pair</button>
+                </div>
+                <div id="pairSuggestionsPanel" class="pair-suggestions">
+                  <div class="manual-pairs-header">
+                    <span>Pair Suggestions</span>
+                    <div class="header-actions">
+                      <strong id="pairSuggestionsMeta">0 suggestions</strong>
+                      <button id="applyAllSuggestionsBtn" type="button">Apply All</button>
+                    </div>
+                  </div>
+                  <ul id="pairSuggestionsList" class="manual-pair-list">
+                    <li class="empty">No pair suggestions.</li>
+                  </ul>
+                </div>
+                <ul id="manualPairList" class="manual-pair-list">
+                  <li class="empty">Manual pairing kapalı.</li>
+                </ul>
+              </div>
+            </details>
+          </section>
+        </aside>
+      </div>
     </main>
 
-    <script src="./app.js?v=20260317f" type="module"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="./app.js?v=20260408b" type="module"></script>
   </body>
 </html>
