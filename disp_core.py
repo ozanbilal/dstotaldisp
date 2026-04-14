@@ -47,10 +47,141 @@ PREVIEW_MAX_SERIES = 5
 SOURCE_VIEW_MAX_POINTS = 420
 CALC_PROGRESS_START = 55.0
 CALC_PROGRESS_END = 92.0
+SUMMARY_CONFIDENCE_LABELS = {
+    10: "En guvenilir",
+    20: "Yuksek guven",
+    30: "Orta guven",
+    40: "Yaklasik",
+    50: "Dolayli",
+    60: "Referans",
+}
+SUMMARY_SOURCE_SYSTEM = "deepsoil"
+SUMMARY_METHOD_METADATA = {
+    "db_direct_total": {
+        "displayLabel": "DB Direct Total",
+        "methodClass": "direct",
+        "confidenceRank": 10,
+        "sourceRefs": ["VEL_DISP.LAYERn_DISP_TOTAL"],
+    },
+    "strain_input_total": {
+        "displayLabel": "Strain + Input Proxy",
+        "methodClass": "computed",
+        "confidenceRank": 20,
+        "sourceRefs": ["Layer Strain", "Input Motion"],
+    },
+    "strain_deepest_total": {
+        "displayLabel": "Strain + Deepest Layer Proxy",
+        "methodClass": "computed",
+        "confidenceRank": 30,
+        "sourceRefs": ["Layer Strain", "Deepest Layer Acceleration"],
+    },
+    "profile_offset_total": {
+        "displayLabel": "Profile Offset Approximation",
+        "methodClass": "approximate",
+        "confidenceRank": 40,
+        "sourceRefs": ["Profile", "Bottom Offset"],
+    },
+    "time_history_total": {
+        "displayLabel": "Time-History Indirect Total",
+        "methodClass": "indirect",
+        "confidenceRank": 50,
+        "sourceRefs": ["Layer Acceleration"],
+    },
+    "profile_reference_total": {
+        "displayLabel": "Profile Reference",
+        "methodClass": "reference",
+        "confidenceRank": 60,
+        "sourceRefs": ["Profile Maximum Displacement"],
+    },
+}
 
 
 def _log(logs: List[Dict[str, str]], level: str, message: str) -> None:
     logs.append({"level": level, "message": message})
+
+
+def _safe_float_list(values: Any) -> List[float | None]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    out: List[float | None] = []
+    for item in arr:
+        out.append(float(item) if np.isfinite(item) else None)
+    return out
+
+
+def _series_has_finite_values(values: Any) -> bool:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    return bool(arr.size and np.any(np.isfinite(arr)))
+
+
+def _normalize_source_refs(source_refs: Sequence[str] | None, fallback: Sequence[str] | None = None) -> List[str]:
+    refs = source_refs if source_refs is not None else fallback
+    if not refs:
+        return []
+    return [str(item) for item in refs if str(item or "").strip()]
+
+
+def _build_method_variant(
+    variant_key: str,
+    depths: Any,
+    values: Any,
+    *,
+    valid: bool,
+    reason: str,
+    display_label: str | None = None,
+    method_class: str | None = None,
+    confidence_rank: int | None = None,
+    source_refs: Sequence[str] | None = None,
+) -> Dict[str, Any]:
+    meta = SUMMARY_METHOD_METADATA.get(variant_key, {})
+    resolved_rank = int(confidence_rank if confidence_rank is not None else meta.get("confidenceRank", 90))
+    resolved_label = str(display_label or meta.get("displayLabel", variant_key))
+    resolved_class = str(method_class or meta.get("methodClass", "derived"))
+    return {
+        "variantKey": str(variant_key),
+        "displayLabel": resolved_label,
+        "methodClass": resolved_class,
+        "depths": _safe_float_list(depths),
+        "values": _safe_float_list(values),
+        "valid": bool(valid),
+        "confidenceRank": resolved_rank,
+        "confidenceLabel": SUMMARY_CONFIDENCE_LABELS.get(resolved_rank, "Destekleyici"),
+        "reason": str(reason or ""),
+        "sourceRefs": _normalize_source_refs(source_refs, meta.get("sourceRefs")),
+    }
+
+
+def _pick_primary_variant_key(variants: Sequence[Mapping[str, Any]]) -> str:
+    valid_variants = [
+        item
+        for item in variants
+        if bool(item.get("valid")) and _series_has_finite_values(item.get("values", []))
+    ]
+    if not valid_variants:
+        return ""
+    valid_variants.sort(key=lambda item: (int(item.get("confidenceRank", 999)), str(item.get("displayLabel", ""))))
+    return str(valid_variants[0].get("variantKey", ""))
+
+
+def _resultant_profile_from_components(x_values: Any, y_values: Any) -> np.ndarray:
+    x_arr = np.asarray(x_values, dtype=float).reshape(-1)
+    y_arr = np.asarray(y_values, dtype=float).reshape(-1)
+    count = min(int(x_arr.size), int(y_arr.size))
+    if count <= 0:
+        return np.zeros(0, dtype=float)
+    return np.sqrt(x_arr[:count] ** 2 + y_arr[:count] ** 2)
+
+
+def _matrix_resultant_envelope(x_matrix: Any, y_matrix: Any) -> np.ndarray:
+    x_arr = np.asarray(x_matrix, dtype=float)
+    y_arr = np.asarray(y_matrix, dtype=float)
+    if x_arr.ndim != 2 or y_arr.ndim != 2:
+        return np.zeros(0, dtype=float)
+    layer_count = min(int(x_arr.shape[0]), int(y_arr.shape[0]))
+    step_count = min(int(x_arr.shape[1]), int(y_arr.shape[1]))
+    if layer_count <= 0 or step_count <= 0:
+        return np.zeros(0, dtype=float)
+    resultant = np.sqrt(x_arr[:layer_count, :step_count] ** 2 + y_arr[:layer_count, :step_count] ** 2)
+    return np.max(resultant, axis=1)
 
 
 def _to_number_series(series: pd.Series) -> np.ndarray:
@@ -1001,11 +1132,59 @@ def _source_entry(
     return {
         "sourceId": str(source_id),
         "sourceLabel": str(source_label),
+        "sourceSystem": SUMMARY_SOURCE_SYSTEM,
         "sourceKind": str(source_kind),
         "axis": str(axis or ""),
         "pairKey": str(pair_key or ""),
         "artifactPairKeys": list(artifact_pair_keys or []),
         "families": clean_families,
+    }
+
+
+def _build_summary_entry(
+    summary_id: str,
+    summary_label: str,
+    summary_kind: str,
+    axis: str,
+    pair_key: str,
+    variants: Sequence[Mapping[str, Any]],
+    *,
+    input_kind: str,
+    available_layer_count: int,
+    profile_layer_count: int,
+    warnings: Sequence[str] | None = None,
+    detail_source_ids: Sequence[str] | None = None,
+    artifact_pair_keys: Sequence[str] | None = None,
+) -> Dict[str, Any]:
+    clean_variants = [dict(item) for item in variants if isinstance(item, Mapping)]
+    primary_variant_key = _pick_primary_variant_key(clean_variants)
+    valid_variant_count = sum(
+        1 for item in clean_variants if bool(item.get("valid")) and _series_has_finite_values(item.get("values", []))
+    )
+    profile_count = max(0, int(profile_layer_count))
+    available_count = max(0, int(available_layer_count))
+    limited_data = profile_count > 0 and available_count < profile_count
+    warning_list = [str(item) for item in (warnings or []) if str(item or "").strip()]
+    return {
+        "summaryId": str(summary_id),
+        "summaryLabel": str(summary_label),
+        "sourceSystem": SUMMARY_SOURCE_SYSTEM,
+        "summaryKind": str(summary_kind),
+        "axis": str(axis or ""),
+        "pairKey": str(pair_key or ""),
+        "inputKind": str(input_kind or ""),
+        "preferredVariantKey": primary_variant_key,
+        "validVariantCount": int(valid_variant_count),
+        "detailSourceIds": list(detail_source_ids or []),
+        "artifactPairKeys": list(artifact_pair_keys or []),
+        "warnings": warning_list,
+        "coverage": {
+            "availableLayerCount": available_count,
+            "profileLayerCount": profile_count,
+            "limitedData": bool(limited_data),
+            "label": "Sinirli veri" if limited_data else "Tam veri",
+        },
+        "variants": clean_variants,
     }
 
 
@@ -2306,6 +2485,437 @@ def _build_method3_source_catalog_entry(
         "METHOD3|ALL",
         [family],
         artifact_pair_keys=["METHOD3|ALL"],
+    )
+
+
+def _profile_layer_count_from_frame(frame: pd.DataFrame | None) -> int:
+    if frame is None or frame.empty or "Depth_m" not in frame.columns:
+        return 0
+    depths = pd.to_numeric(frame["Depth_m"], errors="coerce").to_numpy(dtype=float)
+    return int(np.count_nonzero(np.isfinite(depths)))
+
+
+def _limited_layer_warning(available_count: int, profile_count: int) -> str:
+    return (
+        f"Layer sheet kapsami sinirli ({available_count}/{profile_count}); "
+        "yalniz yaklasik/profile tabanli toplam profiller guvenle gosterildi."
+    )
+
+
+def _pair_total_profile_from_base_refs(
+    strain_bundle: Mapping[str, Any],
+    base_ref_x: Any,
+    base_ref_y: Any,
+) -> np.ndarray:
+    u_rel_x = np.asarray(strain_bundle.get("u_rel_base_x", np.zeros((0, 0))), dtype=float)
+    u_rel_y = np.asarray(strain_bundle.get("u_rel_base_y", np.zeros((0, 0))), dtype=float)
+    base_x = np.asarray(base_ref_x, dtype=float).reshape(-1)
+    base_y = np.asarray(base_ref_y, dtype=float).reshape(-1)
+    if u_rel_x.ndim != 2 or u_rel_y.ndim != 2 or base_x.size == 0 or base_y.size == 0:
+        return np.zeros(0, dtype=float)
+    step_count = min(int(u_rel_x.shape[1]), int(u_rel_y.shape[1]), int(base_x.size), int(base_y.size))
+    layer_count = min(int(u_rel_x.shape[0]), int(u_rel_y.shape[0]))
+    if step_count <= 0 or layer_count <= 0:
+        return np.zeros(0, dtype=float)
+    total_x = u_rel_x[:layer_count, :step_count] + base_x[:step_count][None, :]
+    total_y = u_rel_y[:layer_count, :step_count] + base_y[:step_count][None, :]
+    return _matrix_resultant_envelope(total_x, total_y)
+
+
+def _single_total_profile_from_base_ref(strain_bundle: Mapping[str, Any], base_ref: Any) -> np.ndarray:
+    u_rel = np.asarray(strain_bundle.get("u_rel_base", np.zeros((0, 0))), dtype=float)
+    base = np.asarray(base_ref, dtype=float).reshape(-1)
+    if u_rel.ndim != 2 or base.size == 0:
+        return np.zeros(0, dtype=float)
+    step_count = min(int(u_rel.shape[1]), int(base.size))
+    layer_count = int(u_rel.shape[0])
+    if step_count <= 0 or layer_count <= 0:
+        return np.zeros(0, dtype=float)
+    total = u_rel[:layer_count, :step_count] + base[:step_count][None, :]
+    return np.max(np.abs(total), axis=1)
+
+
+def _compute_pair_deepest_base_refs(
+    x_xl: pd.ExcelFile,
+    y_xl: pd.ExcelFile,
+    strain_bundle: Mapping[str, Any],
+    options: Mapping[str, Any] | None = None,
+) -> Tuple[np.ndarray | None, np.ndarray | None, str]:
+    layer_names = list(strain_bundle.get("layer_names", []))
+    time = np.asarray(strain_bundle.get("time", np.array([])), dtype=float)
+    if not layer_names or time.size == 0:
+        return None, None, "Deepest layer proxy icin gerekli strain zaman tabani bulunamadi."
+    deepest_layer = str(layer_names[-1])
+    try:
+        t_deep_x, a_deep_x = _read_layer_column(x_xl, deepest_layer, "Acceleration (g)")
+        t_deep_y, a_deep_y = _read_layer_column(y_xl, deepest_layer, "Acceleration (g)")
+        deep_x = _acc_to_disp_dual(t_deep_x, a_deep_x, options=options)["primary"]
+        deep_y = _acc_to_disp_dual(t_deep_y, a_deep_y, options=options)["primary"]
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"Deepest layer proxy okunamadi: {exc}"
+    return (
+        np.interp(time, t_deep_x, np.asarray(deep_x, dtype=float)),
+        np.interp(time, t_deep_y, np.asarray(deep_y, dtype=float)),
+        "Strain bazli goreceli deplasman deepest layer proxy ile toplandi.",
+    )
+
+
+def _compute_single_deepest_base_ref(
+    xl: pd.ExcelFile,
+    strain_bundle: Mapping[str, Any],
+    options: Mapping[str, Any] | None = None,
+) -> Tuple[np.ndarray | None, str]:
+    layer_names = list(strain_bundle.get("layer_names", []))
+    time = np.asarray(strain_bundle.get("time", np.array([])), dtype=float)
+    if not layer_names or time.size == 0:
+        return None, "Deepest layer proxy icin gerekli strain zaman tabani bulunamadi."
+    deepest_layer = str(layer_names[-1])
+    try:
+        t_deep, a_deep = _read_layer_column(xl, deepest_layer, "Acceleration (g)")
+        deep = _acc_to_disp_dual(t_deep, a_deep, options=options)["primary"]
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Deepest layer proxy okunamadi: {exc}"
+    return np.interp(time, t_deep, np.asarray(deep, dtype=float)), "Strain bazli goreceli deplasman deepest layer proxy ile toplandi."
+
+
+def _build_pair_summary_entry(
+    x_xl: pd.ExcelFile,
+    y_xl: pd.ExcelFile,
+    x_name: str,
+    y_name: str,
+    comparison_df: pd.DataFrame,
+    profile_sheet_df: pd.DataFrame,
+    strain_bundle: Mapping[str, Any],
+    x_direction_bundle: Mapping[str, Any],
+    y_direction_bundle: Mapping[str, Any],
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    depths = pd.to_numeric(comparison_df.get("Depth_m"), errors="coerce").to_numpy(dtype=float)
+    available_count = int(depths.size)
+    profile_count = _profile_layer_count_from_frame(profile_sheet_df)
+    has_full_layer_coverage = profile_count <= 0 or available_count >= profile_count
+    warnings: List[str] = []
+    if not has_full_layer_coverage:
+        warnings.append(_limited_layer_warning(available_count, profile_count))
+
+    input_values = _pair_total_profile_from_base_refs(
+        strain_bundle,
+        strain_bundle.get("u_input_proxy_x", np.array([])),
+        strain_bundle.get("u_input_proxy_y", np.array([])),
+    )
+    deepest_base_x: np.ndarray | None = None
+    deepest_base_y: np.ndarray | None = None
+    deepest_reason = "Strain bazli goreceli deplasman deepest layer proxy ile toplandi."
+    if str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)) == "deepest_layer":
+        deepest_base_x = np.asarray(strain_bundle.get("u_base_ref_x", np.array([])), dtype=float)
+        deepest_base_y = np.asarray(strain_bundle.get("u_base_ref_y", np.array([])), dtype=float)
+    else:
+        deepest_base_x, deepest_base_y, deepest_reason = _compute_pair_deepest_base_refs(
+            x_xl,
+            y_xl,
+            strain_bundle,
+            options=options,
+        )
+    deepest_values = (
+        _pair_total_profile_from_base_refs(strain_bundle, deepest_base_x, deepest_base_y)
+        if deepest_base_x is not None and deepest_base_y is not None
+        else np.zeros(0, dtype=float)
+    )
+    approximate_values = pd.to_numeric(
+        comparison_df.get("Total_profile_offset_total_est_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    indirect_values = pd.to_numeric(
+        comparison_df.get("TimeHist_Resultant_total_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    reference_values = pd.to_numeric(
+        comparison_df.get("Profile_RSS_total_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    variants = [
+        _build_method_variant(
+            "strain_input_total",
+            depths,
+            input_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(input_values),
+            reason=(
+                "Strain bazli goreceli deplasman Input Motion proxy ile toplandi."
+                if has_full_layer_coverage and _series_has_finite_values(input_values)
+                else "Tum layer sheet'leri bulunmadigi icin strain + input proxy profili gizlendi."
+            ),
+        ),
+        _build_method_variant(
+            "strain_deepest_total",
+            depths,
+            deepest_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(deepest_values),
+            reason=(
+                deepest_reason
+                if has_full_layer_coverage and _series_has_finite_values(deepest_values)
+                else (
+                    "Tum layer sheet'leri bulunmadigi icin strain + deepest layer proxy profili gizlendi."
+                    if not has_full_layer_coverage
+                    else deepest_reason
+                )
+            ),
+        ),
+        _build_method_variant(
+            "profile_offset_total",
+            depths,
+            approximate_values,
+            valid=_series_has_finite_values(approximate_values),
+            reason=(
+                "Profile taban ofseti ve base-relative zarfi uzerinden yaklasik toplam profil uretildi."
+                if _series_has_finite_values(approximate_values)
+                else "Profile ofset tabanli yaklasik toplam profil uretilemedi."
+            ),
+        ),
+        _build_method_variant(
+            "time_history_total",
+            depths,
+            indirect_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(indirect_values),
+            reason=(
+                "Layer ivmeleri integre edilerek dolayli maksimum toplam profil uretildi."
+                if has_full_layer_coverage and _series_has_finite_values(indirect_values)
+                else "Tum layer ivme kayitlari olmadigi icin dolayli zaman-gecmis profili gizlendi."
+            ),
+        ),
+        _build_method_variant(
+            "profile_reference_total",
+            depths,
+            reference_values,
+            valid=_series_has_finite_values(reference_values),
+            reason=(
+                "DEEPSOIL Profile sheet maksimum deplasman referansi."
+                if _series_has_finite_values(reference_values)
+                else "Profile referans profili bulunamadi."
+            ),
+        ),
+    ]
+
+    pair_key = _build_pair_key(x_name, y_name)
+    return _build_summary_entry(
+        f"summary-pair-{_source_slug(pair_key)}",
+        f"{_record_label_from_name(x_name)} | {_record_label_from_name(y_name)}",
+        "pair",
+        "XY",
+        pair_key,
+        variants,
+        input_kind="xlsx",
+        available_layer_count=available_count,
+        profile_layer_count=profile_count,
+        warnings=warnings,
+        detail_source_ids=[
+            f"source-pair-{_source_slug(pair_key)}",
+            f"source-single-{_source_slug(x_name)}",
+            f"source-single-{_source_slug(y_name)}",
+        ],
+        artifact_pair_keys=[pair_key, f"METHOD2|{Path(x_name).stem}", f"METHOD2|{Path(y_name).stem}"],
+    )
+
+
+def _build_single_summary_entry(
+    xl: pd.ExcelFile,
+    file_name: str,
+    axis_label: str,
+    summary_df: pd.DataFrame,
+    profile_sheet_df: pd.DataFrame,
+    strain_bundle: Mapping[str, Any],
+    direction_bundle: Mapping[str, Any],
+    options: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    depths = pd.to_numeric(summary_df.get("Depth_m"), errors="coerce").to_numpy(dtype=float)
+    available_count = int(depths.size)
+    profile_count = _profile_layer_count_from_frame(profile_sheet_df)
+    has_full_layer_coverage = profile_count <= 0 or available_count >= profile_count
+    warnings: List[str] = []
+    if not has_full_layer_coverage:
+        warnings.append(_limited_layer_warning(available_count, profile_count))
+
+    input_values = _single_total_profile_from_base_ref(strain_bundle, strain_bundle.get("u_input_proxy", np.array([])))
+    deepest_base, deepest_reason = (
+        (np.asarray(strain_bundle.get("u_base_ref", np.array([])), dtype=float), "Strain bazli goreceli deplasman deepest layer proxy ile toplandi.")
+        if str(strain_bundle.get("base_reference", DEFAULT_BASE_REFERENCE)) == "deepest_layer"
+        else _compute_single_deepest_base_ref(xl, strain_bundle, options=options)
+    )
+    deepest_values = _single_total_profile_from_base_ref(strain_bundle, deepest_base) if deepest_base is not None else np.zeros(0, dtype=float)
+    approximate_values = pd.to_numeric(
+        summary_df.get("Profile_offset_total_est_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    indirect_values = pd.to_numeric(
+        summary_df.get("TimeHist_maxabs_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    reference_values = pd.to_numeric(
+        summary_df.get("Profile_max_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+
+    variants = [
+        _build_method_variant(
+            "strain_input_total",
+            depths,
+            input_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(input_values),
+            reason=(
+                "Strain bazli goreceli deplasman Input Motion proxy ile toplandi."
+                if has_full_layer_coverage and _series_has_finite_values(input_values)
+                else "Tum layer sheet'leri bulunmadigi icin strain + input proxy profili gizlendi."
+            ),
+            display_label=f"Strain + Input Proxy ({axis_label})",
+        ),
+        _build_method_variant(
+            "strain_deepest_total",
+            depths,
+            deepest_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(deepest_values),
+            reason=(
+                deepest_reason
+                if has_full_layer_coverage and _series_has_finite_values(deepest_values)
+                else (
+                    "Tum layer sheet'leri bulunmadigi icin strain + deepest layer proxy profili gizlendi."
+                    if not has_full_layer_coverage
+                    else deepest_reason
+                )
+            ),
+            display_label=f"Strain + Deepest Layer Proxy ({axis_label})",
+        ),
+        _build_method_variant(
+            "profile_offset_total",
+            depths,
+            approximate_values,
+            valid=_series_has_finite_values(approximate_values),
+            reason=(
+                "Profile taban ofseti ve base-relative zarfi uzerinden yaklasik toplam profil uretildi."
+                if _series_has_finite_values(approximate_values)
+                else "Profile ofset tabanli yaklasik toplam profil uretilemedi."
+            ),
+            display_label=f"Profile Offset Approximation ({axis_label})",
+        ),
+        _build_method_variant(
+            "time_history_total",
+            depths,
+            indirect_values,
+            valid=has_full_layer_coverage and _series_has_finite_values(indirect_values),
+            reason=(
+                "Layer ivmeleri integre edilerek dolayli maksimum toplam profil uretildi."
+                if has_full_layer_coverage and _series_has_finite_values(indirect_values)
+                else "Tum layer ivme kayitlari olmadigi icin dolayli zaman-gecmis profili gizlendi."
+            ),
+            display_label=f"Time-History Indirect ({axis_label})",
+        ),
+        _build_method_variant(
+            "profile_reference_total",
+            depths,
+            reference_values,
+            valid=_series_has_finite_values(reference_values),
+            reason=(
+                "DEEPSOIL Profile sheet maksimum deplasman referansi."
+                if _series_has_finite_values(reference_values)
+                else "Profile referans profili bulunamadi."
+            ),
+            display_label=f"Profile Reference ({axis_label})",
+        ),
+    ]
+
+    record_label = _record_label_from_name(file_name)
+    pair_key = f"SINGLE|{Path(file_name).stem}"
+    return _build_summary_entry(
+        f"summary-single-{_source_slug(file_name)}",
+        record_label,
+        "single",
+        axis_label,
+        pair_key,
+        variants,
+        input_kind="xlsx",
+        available_layer_count=available_count,
+        profile_layer_count=profile_count,
+        warnings=warnings,
+        detail_source_ids=[f"source-single-{_source_slug(file_name)}"],
+        artifact_pair_keys=[pair_key, f"METHOD2|{Path(file_name).stem}"],
+    )
+
+
+def _build_db_pair_summary_entry(
+    x_name: str,
+    y_name: str,
+    summary_df: pd.DataFrame,
+) -> Dict[str, Any]:
+    depths = pd.to_numeric(summary_df.get("Depth_m"), errors="coerce").to_numpy(dtype=float)
+    direct_values = pd.to_numeric(
+        summary_df.get("Total_resultant_maxabs_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    pair_key = f"DB|{_build_pair_key(x_name, y_name)}"
+    variants = [
+        _build_method_variant(
+            "db_direct_total",
+            depths,
+            direct_values,
+            valid=_series_has_finite_values(direct_values),
+            reason=(
+                "DEEPSOIL veritabanindaki toplam deplasman kolonlari dogrudan okundu."
+                if _series_has_finite_values(direct_values)
+                else "DB direct toplam deplasman profili bulunamadi."
+            ),
+        )
+    ]
+    return _build_summary_entry(
+        f"summary-db-pair-{_source_slug(pair_key)}",
+        f"{_record_label_from_name(x_name)} | {_record_label_from_name(y_name)}",
+        "db_pair",
+        "XY",
+        pair_key,
+        variants,
+        input_kind="db",
+        available_layer_count=int(depths.size),
+        profile_layer_count=int(depths.size),
+        detail_source_ids=[f"source-db-pair-{_source_slug(pair_key)}"],
+        artifact_pair_keys=[pair_key, f"DB_METHOD2|{Path(x_name).stem}", f"DB_METHOD2|{Path(y_name).stem}"],
+    )
+
+
+def _build_db_single_summary_entry(file_name: str, bundle: Mapping[str, Any]) -> Dict[str, Any]:
+    summary_df = bundle.get("summary_df", pd.DataFrame())
+    if not isinstance(summary_df, pd.DataFrame):
+        summary_df = pd.DataFrame()
+    depths = pd.to_numeric(summary_df.get("Depth_m", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=float)
+    direct_values = pd.to_numeric(
+        summary_df.get("DB_Total_maxabs_m", pd.Series(dtype=float)),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    record_label = str(bundle.get("recordLabel") or _record_label_from_name(file_name))
+    pair_key = f"DB_SINGLE|{record_label}"
+    variants = [
+        _build_method_variant(
+            "db_direct_total",
+            depths,
+            direct_values,
+            valid=_series_has_finite_values(direct_values),
+            reason=(
+                "DEEPSOIL veritabanindaki toplam deplasman kolonlari dogrudan okundu."
+                if _series_has_finite_values(direct_values)
+                else "DB direct toplam deplasman profili bulunamadi."
+            ),
+            display_label=f"DB Direct Total ({bundle.get('axis', '') or 'Single'})",
+        )
+    ]
+    return _build_summary_entry(
+        f"summary-db-single-{_source_slug(file_name)}",
+        record_label,
+        "db_single",
+        str(bundle.get("axis", "")),
+        pair_key,
+        variants,
+        input_kind="db",
+        available_layer_count=int(depths.size),
+        profile_layer_count=int(depths.size),
+        detail_source_ids=[f"source-db-single-{_source_slug(file_name)}"],
+        artifact_pair_keys=[pair_key, f"DB_METHOD2|{record_label}"],
     )
 
 
@@ -3711,11 +4321,23 @@ def _build_comparison_df(strain_df: pd.DataFrame, legacy_df: pd.DataFrame) -> pd
         if optional_col in legacy_df.columns:
             legacy_cols.append(optional_col)
 
-    merged = strain_df[strain_cols].merge(
-        legacy_df[legacy_cols],
-        on=["Layer_Index", "Depth_m"],
-        how="inner",
+    strain_view = strain_df[strain_cols].copy()
+    legacy_view = legacy_df[legacy_cols].copy().rename(columns={"Depth_m": "Depth_m_legacy"})
+    merged = strain_view.merge(
+        legacy_view,
+        on=["Layer_Index"],
+        how="left",
     )
+    if "Depth_m_legacy" in merged.columns:
+        merged["Depth_m"] = (
+            pd.to_numeric(merged.get("Depth_m"), errors="coerce")
+            .fillna(pd.to_numeric(merged.get("Depth_m_legacy"), errors="coerce"))
+        )
+        merged = merged.drop(columns=["Depth_m_legacy"])
+
+    merged = merged.sort_values(["Layer_Index", "Depth_m"], kind="stable").reset_index(drop=True)
+    if merged.empty:
+        return merged
 
     profile_x_bottom = float(merged["Profile_X_max_m"].iloc[-1])
     profile_y_bottom = float(merged["Profile_Y_max_m"].iloc[-1])
@@ -4688,6 +5310,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
     errors: List[Dict[str, Any]] = []
     results: List[Dict[str, Any]] = []
     source_catalog: List[Dict[str, Any]] = []
+    summary_catalog: List[Dict[str, Any]] = []
     return_web_results = _to_bool(normalized_options.get("_returnWebResults", False), False)
 
     def _store_result(result: Dict[str, Any]) -> None:
@@ -4699,6 +5322,10 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
     def _store_source_entry(entry: Dict[str, Any] | None) -> None:
         if isinstance(entry, dict) and entry.get("families"):
             source_catalog.append(entry)
+
+    def _store_summary_entry(entry: Dict[str, Any] | None) -> None:
+        if isinstance(entry, dict) and entry.get("variants"):
+            summary_catalog.append(entry)
 
     file_names = sorted(file_map.keys())
     db_candidates = sorted([name for name in file_names if _candidate_kind(name) == "db" and _is_candidate_file(name, False)])
@@ -4762,6 +5389,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
                     }
                 )
                 _store_source_entry(_build_db_pair_source_catalog_entry(x_name, y_name, summary_df, x_bundle, y_bundle))
+                _store_summary_entry(_build_db_pair_summary_entry(x_name, y_name, summary_df))
         except Exception as exc:  # noqa: BLE001
             _log(logs, "warning", f"DB source catalog skipped for pair {x_name} + {y_name}: {exc}")
 
@@ -4769,6 +5397,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
         try:
             bundle = _read_db_disp_bundle(file_map[name], name, axis_override=manual_axis_map.get(name))
             _store_source_entry(_build_db_single_source_catalog_entry(name, bundle))
+            _store_summary_entry(_build_db_single_summary_entry(name, bundle))
         except Exception as exc:  # noqa: BLE001
             _log(logs, "warning", f"DB source catalog skipped for single {name}: {exc}")
 
@@ -4917,6 +5546,7 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
     return {
         "results": results,
         "sourceCatalog": source_catalog,
+        "summaryCatalog": summary_catalog,
         "logs": logs,
         "errors": errors,
         "metrics": {
@@ -5084,6 +5714,7 @@ def process_db_single(
         "outputFileName": output_file_name,
         "outputBytes": output_bytes,
         "previewCharts": _db_single_preview_charts(bundle),
+        "summaryCatalogEntry": _build_db_single_summary_entry(file_name, bundle),
         "metrics": {
             "mode": "db_single",
             "axis": bundle["axis"],
@@ -5181,6 +5812,7 @@ def process_db_pair(
         "outputFileName": output_file_name,
         "outputBytes": output_bytes,
         "previewCharts": _db_pair_preview_charts(summary_df, x_bundle, y_bundle),
+        "summaryCatalogEntry": _build_db_pair_summary_entry(x_name, y_name, summary_df),
         "metrics": {
             "mode": "db_pair",
             "layerCount": int(len(summary_df)),
@@ -5927,6 +6559,16 @@ def _process_single_file_xlsx(
             strain_bundle,
             profile_sheet_df,
         ),
+        "summaryCatalogEntry": _build_single_summary_entry(
+            xl,
+            file_name,
+            axis_label,
+            summary_df,
+            profile_sheet_df,
+            strain_bundle,
+            direction_bundle,
+            normalized_options,
+        ),
     }
 
 
@@ -6152,6 +6794,18 @@ def _process_xy_pair_xlsx(
             y_direction_bundle,
             strain_bundle,
         ),
+        "summaryCatalogEntry": _build_pair_summary_entry(
+            x_xl,
+            y_xl,
+            x_name,
+            y_name,
+            comparison_df,
+            profile_sheet_df,
+            strain_bundle,
+            x_direction_bundle,
+            y_direction_bundle,
+            normalized_options,
+        ),
     }
 
 
@@ -6300,6 +6954,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     errors: List[Dict[str, str]] = []
     results: List[Dict[str, Any]] = []
     source_catalog: List[Dict[str, Any]] = []
+    summary_catalog: List[Dict[str, Any]] = []
     return_web_results = _to_bool(normalized_options.get("_returnWebResults", False), False)
 
     def _store_result(result: Dict[str, Any]) -> None:
@@ -6320,6 +6975,10 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
             return
         for item in entries:
             _store_source_entry(item)
+
+    def _store_summary_entry(entry: Dict[str, Any] | None) -> None:
+        if isinstance(entry, dict) and entry.get("variants"):
+            summary_catalog.append(entry)
 
     file_names = sorted(file_map.keys())
     xlsx_candidates = sorted(
@@ -6464,6 +7123,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                     prefetched_method2.update(pair_payload.get("method2Extracted", {}))
                     _store_source_entries(pair_payload.get("sourceCatalogEntries"))
                     _store_source_entry(pair_payload.get("sourceCatalogEntry"))
+                    _store_summary_entry(pair_payload.get("summaryCatalogEntry"))
                 elif kind_x == "db" and kind_y == "db":
                     result = process_db_pair(
                         file_map[x_name],
@@ -6472,6 +7132,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                         y_name,
                         normalized_options,
                     )
+                    _store_summary_entry(result.get("summaryCatalogEntry"))
                 else:
                     raise ValueError(f"Mismatched pair types are not supported: {x_name}, {y_name}")
                 _store_result(result)
@@ -6496,6 +7157,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                         prefetched_method2.update(pair_payload.get("method2Extracted", {}))
                         _store_source_entries(pair_payload.get("sourceCatalogEntries"))
                         _store_source_entry(pair_payload.get("sourceCatalogEntry"))
+                        _store_summary_entry(pair_payload.get("summaryCatalogEntry"))
                         _store_result(result)
                         pair_processed += 1
                         _log(
@@ -6535,12 +7197,14 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                         prefetched_method2[name] = extracted
                     _store_source_entries(single_payload.get("sourceCatalogEntries"))
                     _store_source_entry(single_payload.get("sourceCatalogEntry"))
+                    _store_summary_entry(single_payload.get("summaryCatalogEntry"))
                 elif kind == "db":
                     result = process_db_single(
                         file_map[name],
                         name,
                         normalized_options,
                     )
+                    _store_summary_entry(result.get("summaryCatalogEntry"))
                 else:
                     raise ValueError(f"Unsupported input file type: {name}")
                 _store_result(result)
@@ -6563,6 +7227,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
                             prefetched_method2[name] = extracted
                         _store_source_entries(single_payload.get("sourceCatalogEntries"))
                         _store_source_entry(single_payload.get("sourceCatalogEntry"))
+                        _store_summary_entry(single_payload.get("summaryCatalogEntry"))
                         _store_result(result)
                         single_processed += 1
                         _log(
@@ -6747,6 +7412,7 @@ def process_batch_files(file_map: Mapping[str, bytes], options: Mapping[str, Any
     return {
         "results": results,
         "sourceCatalog": source_catalog,
+        "summaryCatalog": summary_catalog,
         "logs": logs,
         "errors": errors,
         "metrics": {

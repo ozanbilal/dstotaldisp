@@ -68,6 +68,7 @@ def run_batch_from_fs(input_dir: str, options: Any = None, progress_callback: An
     return {
         "results": web_results,
         "sourceCatalog": summary.get("sourceCatalog", []),
+        "summaryCatalog": summary.get("summaryCatalog", []),
         "logs": summary["logs"],
         "errors": summary["errors"],
         "metrics": summary["metrics"],

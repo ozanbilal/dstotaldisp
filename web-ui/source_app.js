@@ -7,9 +7,23 @@ import {
   normalizeViewerChartMode,
   summarizeViewerResults,
 } from "./viewer.mjs?v=20260408c";
-import { detectDirectionInfo, PAIR_SCORE_AUTO_THRESHOLD, resolveDeepsoilPairingCandidates } from "./pairing.mjs?v=20260408c";
+import { buildSummaryViewerScene } from "./summary_viewer.mjs?v=20260410a";
+import { detectDirectionInfo, PAIR_SCORE_AUTO_THRESHOLD, resolveDeepsoilPairingCandidates } from "./pairing.mjs?v=20260409a";
+import {
+  buildViewerUrlSearch,
+  openDetailDrawer,
+  parseViewerUrlState,
+  prefersReducedMotion,
+  resolveScrollBehavior,
+  resolveSummaryPlotState,
+} from "./viewer_shell_state.mjs?v=20260410a";
+import {
+  buildSpectrumScopeKey,
+  formatViewerSourceMeta,
+  getScopedSpectrumPeriodMax,
+} from "./viewer_controls_state.mjs?v=20260410b";
 
-const APP_VERSION = "20260408c";
+const APP_VERSION = "20260410b";
 const MANUAL_PAIR_STORAGE_KEY = "deepsoil-total-disp.manual-pairs.v1";
 const SHELL_MODE_STORAGE_KEY = "deepsoil-total-disp.shell-mode.v1";
 const VIEWER_PREFS_STORAGE_KEY = "deepsoil-total-disp.viewer-prefs.v1";
@@ -19,6 +33,14 @@ const RUN_SNAPSHOT_KEY = "latest-v1";
 const MAX_PARALLEL_WORKERS = 4;
 
 const PLOT_COLORS = ["#0d684d", "#ce6433", "#3559a6", "#9a4a31", "#6e7681", "#5f7c2f", "#764a95"];
+const SUMMARY_VARIANT_COLORS = {
+  db_direct_total: "#0d684d",
+  strain_input_total: "#3559a6",
+  strain_deepest_total: "#ce6433",
+  profile_offset_total: "#9a4a31",
+  time_history_total: "#6e7681",
+  profile_reference_total: "#5f7c2f",
+};
 
 const state = {
   workerReady: false,
@@ -30,6 +52,7 @@ const state = {
   pairSuggestions: [],
   results: [],
   sourceCatalog: [],
+  summaryCatalog: [],
   errors: [],
   logs: [],
   metrics: null,
@@ -37,13 +60,16 @@ const state = {
   snapshotPersistPromise: null,
   shellMode: "viewer",
   viewerChartMode: "focus",
+  activeSummaryId: "",
   activeSourceId: "",
   activeFamilyKey: "",
   activeChartKey: "",
   activeLayerIndex: 0,
   compareSourceIds: [],
+  summaryVariantVisibilityMap: {},
+  summaryPrimaryVariantMap: {},
   seriesVisibilityMap: {},
-  spectrumPeriodMax: "",
+  spectrumPeriodMaxMap: {},
   logX: false,
   logY: false,
 };
@@ -63,6 +89,26 @@ const dom = {
   countStats: document.getElementById("countStats"),
   metrics: document.getElementById("metricCards"),
   metricMeta: document.getElementById("metricMeta"),
+  summaryList: document.getElementById("summaryList"),
+  summaryMeta: document.getElementById("summaryMeta"),
+  summaryTitle: document.getElementById("summaryTitle"),
+  summarySubtitle: document.getElementById("summarySubtitle"),
+  summaryCounter: document.getElementById("summaryCounter"),
+  summaryPrevBtn: document.getElementById("summaryPrevBtn"),
+  summaryNextBtn: document.getElementById("summaryNextBtn"),
+  summaryPlotHost: document.getElementById("summaryPlotHost"),
+  summaryPrimaryLabel: document.getElementById("summaryPrimaryLabel"),
+  summaryCoverageLabel: document.getElementById("summaryCoverageLabel"),
+  summaryInputLabel: document.getElementById("summaryInputLabel"),
+  summaryVariantLabel: document.getElementById("summaryVariantLabel"),
+  summaryVariantSelect: document.getElementById("summaryVariantSelect"),
+  summaryMethodList: document.getElementById("summaryMethodList"),
+  summaryMethodMeta: document.getElementById("summaryMethodMeta"),
+  summaryWarningList: document.getElementById("summaryWarningList"),
+  summaryWarningMeta: document.getElementById("summaryWarningMeta"),
+  summaryDetailBtn: document.getElementById("summaryDetailBtn"),
+  detailViewerLink: document.getElementById("detailViewerLink"),
+  detailViewerPanel: document.getElementById("detailViewerPanel"),
   sourceList: document.getElementById("sourceList"),
   sourceMeta: document.getElementById("sourceMeta"),
   familyList: document.getElementById("familyList"),
@@ -450,17 +496,33 @@ function loadShellModePreference() {
   }
 }
 
+function loadUrlStatePreference() {
+  try {
+    return parseViewerUrlState(globalThis.location?.search || "");
+  } catch {
+    return { hasAny: false, shellMode: null, activeSummaryId: "", viewerPrefs: {} };
+  }
+}
+
 function getViewerPrefsSnapshot() {
   return {
     chartMode: state.viewerChartMode,
+    activeSummaryId: String(state.activeSummaryId || ""),
     activeSourceId: String(state.activeSourceId || ""),
     activeFamilyKey: String(state.activeFamilyKey || ""),
     activeChartKey: String(state.activeChartKey || ""),
     activeLayerIndex: Number.isFinite(Number(state.activeLayerIndex)) ? Math.max(0, Number(state.activeLayerIndex)) : 0,
     compareSourceIds: Array.isArray(state.compareSourceIds) ? [...state.compareSourceIds] : [],
+    summaryPrimaryVariantMap:
+      state.summaryPrimaryVariantMap && typeof state.summaryPrimaryVariantMap === "object"
+        ? { ...state.summaryPrimaryVariantMap }
+        : {},
     seriesVisibilityMap:
       state.seriesVisibilityMap && typeof state.seriesVisibilityMap === "object" ? { ...state.seriesVisibilityMap } : {},
-    spectrumPeriodMax: String(state.spectrumPeriodMax || "").trim(),
+    spectrumPeriodMaxMap:
+      state.spectrumPeriodMaxMap && typeof state.spectrumPeriodMaxMap === "object"
+        ? { ...state.spectrumPeriodMaxMap }
+        : {},
     logX: !!state.logX,
     logY: !!state.logY,
   };
@@ -473,6 +535,7 @@ function loadViewerPrefs() {
     const parsed = JSON.parse(raw);
     return {
       chartMode: normalizeViewerChartMode(parsed?.chartMode),
+      activeSummaryId: String(parsed?.activeSummaryId || "").trim(),
       activeSourceId: String(parsed?.activeSourceId || "").trim(),
       activeFamilyKey: String(parsed?.activeFamilyKey || "").trim(),
       activeChartKey: String(parsed?.activeChartKey || "").trim(),
@@ -480,8 +543,15 @@ function loadViewerPrefs() {
       compareSourceIds: Array.isArray(parsed?.compareSourceIds)
         ? parsed.compareSourceIds.map((value) => String(value || "").trim()).filter(Boolean)
         : [],
+      summaryPrimaryVariantMap:
+        parsed?.summaryPrimaryVariantMap && typeof parsed.summaryPrimaryVariantMap === "object"
+          ? parsed.summaryPrimaryVariantMap
+          : {},
       seriesVisibilityMap: parsed?.seriesVisibilityMap && typeof parsed.seriesVisibilityMap === "object" ? parsed.seriesVisibilityMap : {},
-      spectrumPeriodMax: String(parsed?.spectrumPeriodMax || "").trim(),
+      spectrumPeriodMaxMap:
+        parsed?.spectrumPeriodMaxMap && typeof parsed.spectrumPeriodMaxMap === "object"
+          ? parsed.spectrumPeriodMaxMap
+          : {},
       logX: !!parsed?.logX,
       logY: !!parsed?.logY,
     };
@@ -516,6 +586,7 @@ function updateViewerModeUi() {
 
 function applyViewerPrefs(next = {}, { persist = true } = {}) {
   if (Object.prototype.hasOwnProperty.call(next, "chartMode")) state.viewerChartMode = normalizeViewerChartMode(next.chartMode);
+  if (Object.prototype.hasOwnProperty.call(next, "activeSummaryId")) state.activeSummaryId = String(next.activeSummaryId || "").trim();
   if (Object.prototype.hasOwnProperty.call(next, "activeSourceId")) state.activeSourceId = String(next.activeSourceId || "").trim();
   if (Object.prototype.hasOwnProperty.call(next, "activeFamilyKey")) state.activeFamilyKey = String(next.activeFamilyKey || "").trim();
   if (Object.prototype.hasOwnProperty.call(next, "activeChartKey")) state.activeChartKey = String(next.activeChartKey || "").trim();
@@ -528,13 +599,21 @@ function applyViewerPrefs(next = {}, { persist = true } = {}) {
       ? next.compareSourceIds.map((value) => String(value || "").trim()).filter(Boolean)
       : [];
   }
+  if (Object.prototype.hasOwnProperty.call(next, "summaryPrimaryVariantMap")) {
+    state.summaryPrimaryVariantMap =
+      next.summaryPrimaryVariantMap && typeof next.summaryPrimaryVariantMap === "object"
+        ? { ...next.summaryPrimaryVariantMap }
+        : {};
+  }
   if (Object.prototype.hasOwnProperty.call(next, "seriesVisibilityMap")) {
     state.seriesVisibilityMap =
       next.seriesVisibilityMap && typeof next.seriesVisibilityMap === "object" ? { ...next.seriesVisibilityMap } : {};
   }
-  if (Object.prototype.hasOwnProperty.call(next, "spectrumPeriodMax")) {
-    const value = String(next.spectrumPeriodMax || "").trim();
-    state.spectrumPeriodMax = value;
+  if (Object.prototype.hasOwnProperty.call(next, "spectrumPeriodMaxMap")) {
+    state.spectrumPeriodMaxMap =
+      next.spectrumPeriodMaxMap && typeof next.spectrumPeriodMaxMap === "object"
+        ? { ...next.spectrumPeriodMaxMap }
+        : {};
   }
   if (Object.prototype.hasOwnProperty.call(next, "logX")) state.logX = !!next.logX;
   if (Object.prototype.hasOwnProperty.call(next, "logY")) state.logY = !!next.logY;
@@ -556,6 +635,65 @@ function syncSourceViewerSelection() {
   return scene;
 }
 
+function syncSummarySelection() {
+  const scene = buildSummaryViewerScene(state.summaryCatalog, {
+    activeSummaryId: state.activeSummaryId,
+    variantVisibilityMap: state.summaryVariantVisibilityMap,
+    primaryVariantMap: state.summaryPrimaryVariantMap,
+  });
+  state.activeSummaryId = scene.activeSummaryId || "";
+  return scene;
+}
+
+function setActiveSummary(summaryId) {
+  applyViewerPrefs({ activeSummaryId: summaryId }, { persist: true });
+  renderAll();
+}
+
+function toggleSummaryVariantVisibility(summaryId, variantKey, visible) {
+  const key = `${summaryId}::${variantKey}`;
+  if (visible) delete state.summaryVariantVisibilityMap[key];
+  else state.summaryVariantVisibilityMap[key] = false;
+  if (!visible && state.summaryPrimaryVariantMap?.[summaryId] === variantKey) {
+    const nextPrimaryMap = { ...(state.summaryPrimaryVariantMap || {}) };
+    delete nextPrimaryMap[summaryId];
+    state.summaryPrimaryVariantMap = nextPrimaryMap;
+    persistViewerPrefs();
+  }
+  renderAll();
+}
+
+function setSummaryPrimaryVariant(summaryId, variantKey) {
+  const normalizedSummaryId = String(summaryId || "").trim();
+  const normalizedVariantKey = String(variantKey || "").trim();
+  if (!normalizedSummaryId || !normalizedVariantKey) return;
+  const next = {
+    ...(state.summaryPrimaryVariantMap || {}),
+    [normalizedSummaryId]: normalizedVariantKey,
+  };
+  const visibilityKey = `${normalizedSummaryId}::${normalizedVariantKey}`;
+  const nextVisibility = { ...(state.summaryVariantVisibilityMap || {}) };
+  delete nextVisibility[visibilityKey];
+  applyViewerPrefs({ summaryPrimaryVariantMap: next }, { persist: true });
+  state.summaryVariantVisibilityMap = nextVisibility;
+  renderAll();
+}
+
+function focusSummaryDetail(summaryEntry) {
+  const detailSourceId = Array.isArray(summaryEntry?.detailSourceIds) ? summaryEntry.detailSourceIds[0] : "";
+  if (!detailSourceId) return;
+  openDetailDrawer(dom.detailViewerPanel);
+  setActiveSource(detailSourceId);
+  try {
+    dom.detailViewerPanel?.scrollIntoView({
+      behavior: resolveScrollBehavior(prefersReducedMotion()),
+      block: "start",
+    });
+  } catch {
+    // Ignore scroll failures in older browsers.
+  }
+}
+
 function setShellMode(nextMode, { persist = true } = {}) {
   state.shellMode = normalizeShellMode(nextMode);
   updateShellModeUi();
@@ -566,6 +704,32 @@ function setShellMode(nextMode, { persist = true } = {}) {
     globalThis.localStorage?.setItem(SHELL_MODE_STORAGE_KEY, state.shellMode);
   } catch {
     // Ignore local persistence failures.
+  }
+}
+
+function syncUrlState(summaryScene, scene) {
+  if (!globalThis.history?.replaceState || !globalThis.location) return;
+  const nextSearch = buildViewerUrlSearch({
+    shellMode: state.shellMode,
+    activeSummaryId: summaryScene?.activeSummaryId || "",
+    activeSourceId: scene?.activeSourceId || "",
+    activeFamilyKey: scene?.activeFamilyKey || "",
+    activeChartKey: scene?.activeChartKey || "",
+    activeLayerIndex:
+      scene?.activeLayerCount > 0 && Number.isFinite(Number(scene?.activeLayerIndex)) ? Number(scene.activeLayerIndex) : null,
+  });
+  const currentSearch = globalThis.location.search || "";
+  const nextUrl = `${globalThis.location.pathname}${nextSearch}${globalThis.location.hash || ""}`;
+  if (currentSearch === nextSearch) return;
+  globalThis.history.replaceState(globalThis.history.state, "", nextUrl);
+}
+
+function confirmDestructiveAction(message) {
+  if (typeof globalThis.confirm !== "function") return true;
+  try {
+    return !!globalThis.confirm(message);
+  } catch {
+    return true;
   }
 }
 
@@ -653,15 +817,30 @@ function clearCompareSources() {
 }
 
 function setSpectrumPeriodMax(value) {
+  const scene = syncSourceViewerSelection();
+  const chartType = String(scene.activeChart?.chartType || "").toLowerCase();
+  if (chartType !== "spectrum") return;
+  const scopeKey = buildSpectrumScopeKey(scene);
+  if (!scopeKey) return;
   const raw = String(value ?? "").trim();
   if (!raw) {
-    applyViewerPrefs({ spectrumPeriodMax: "" }, { persist: true });
+    const next = { ...(state.spectrumPeriodMaxMap || {}) };
+    delete next[scopeKey];
+    applyViewerPrefs({ spectrumPeriodMaxMap: next }, { persist: true });
     renderAll();
     return;
   }
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return;
-  applyViewerPrefs({ spectrumPeriodMax: String(parsed) }, { persist: true });
+  applyViewerPrefs(
+    {
+      spectrumPeriodMaxMap: {
+        ...(state.spectrumPeriodMaxMap || {}),
+        [scopeKey]: String(parsed),
+      },
+    },
+    { persist: true }
+  );
   renderAll();
 }
 
@@ -852,6 +1031,7 @@ async function persistRunSnapshot() {
     savedAt: new Date().toISOString(),
     results: state.results,
     sourceCatalog: state.sourceCatalog,
+    summaryCatalog: state.summaryCatalog,
     errors: state.errors,
     metrics: state.metrics,
     viewerPrefs: getViewerPrefsSnapshot(),
@@ -1118,17 +1298,264 @@ function buildArtifactFocusPrefs(result, scene) {
 }
 
 function focusArtifact(result) {
+  const summaryScene = syncSummarySelection();
+  const summaryMatch = (summaryScene.summaries || []).find((entry) => {
+    const keys = Array.isArray(entry?.artifactPairKeys) ? entry.artifactPairKeys : [];
+    return keys.includes(String(result?.pairKey || "")) || String(entry?.pairKey || "") === String(result?.pairKey || "");
+  });
+  if (summaryMatch) state.activeSummaryId = summaryMatch.summaryId;
   const scene = syncSourceViewerSelection();
   const prefs = buildArtifactFocusPrefs(result, scene);
-  if (!prefs) return;
-  applyViewerPrefs(prefs, { persist: true });
+  if (prefs) applyViewerPrefs(prefs, { persist: true });
   renderAll();
+}
+
+function summaryKindLabel(kind) {
+  const value = String(kind || "").toLowerCase();
+  if (value === "pair") return "Pair";
+  if (value === "single") return "Single";
+  if (value === "db_pair") return "DB Pair";
+  if (value === "db_single") return "DB Single";
+  return "Summary";
+}
+
+function summaryVariantColor(variantKey, index = 0) {
+  return SUMMARY_VARIANT_COLORS[String(variantKey || "")] || PLOT_COLORS[index % PLOT_COLORS.length];
+}
+
+function summaryVariantDash(variant, primaryVariantKey) {
+  if (variant?.variantKey === primaryVariantKey) return "solid";
+  const methodClass = String(variant?.methodClass || "");
+  if (methodClass === "reference") return "dot";
+  if (methodClass === "approximate") return "dash";
+  if (methodClass === "indirect") return "longdash";
+  return "solid";
+}
+
+function renderSummaryList(summaryScene) {
+  if (!dom.summaryList || !dom.summaryMeta) return;
+  dom.summaryList.innerHTML = "";
+  dom.summaryMeta.textContent = state.errors.length
+    ? `${summaryScene.summaryCount} kayıt · ${state.errors.length} hata`
+    : `${summaryScene.summaryCount} kayıt`;
+  if (!summaryScene.summaries.length) {
+    dom.summaryList.innerHTML = `<div class="empty-block">${
+      state.errors.length
+        ? `Ozet uretilemedi. ${state.errors.length} is kaydi hata verdi; worker trace veya artifacts bolumunu kontrol et.`
+        : "Henüz analiz özeti yok. Dosyaları seçip batch çalıştır."
+    }</div>`;
+    return;
+  }
+
+  summaryScene.summaries.forEach((entry) => {
+    const primaryVariant = entry.variants.find((variant) => variant.variantKey === entry.preferredVariantKey && variant.valid) || entry.variants.find((variant) => variant.valid) || null;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `list-item summary-list-item${entry.summaryId === summaryScene.activeSummaryId ? " is-active" : ""}`;
+    button.innerHTML = `
+      <small>${escapeHtml(summaryKindLabel(entry.summaryKind))}${entry.axis ? ` · ${escapeHtml(entry.axis)}` : ""}</small>
+      <strong>${escapeHtml(clipMiddle(entry.summaryLabel, 64, 18))}</strong>
+      <span>${escapeHtml(primaryVariant?.displayLabel || "No valid method")} · ${entry.coverage?.limitedData ? "Sinirli veri" : "Tam veri"}</span>
+    `;
+    button.addEventListener("click", () => setActiveSummary(entry.summaryId));
+    dom.summaryList.appendChild(button);
+  });
+}
+
+function renderSummaryStage(summaryScene) {
+  const active = summaryScene.activeSummary;
+  if (dom.summaryTitle) dom.summaryTitle.textContent = active?.summaryLabel || "Toplam Deplasman Profili";
+  if (dom.summarySubtitle) {
+    dom.summarySubtitle.textContent = active
+      ? `${summaryKindLabel(active.summaryKind)} · ${active.inputKind?.toUpperCase?.() || active.inputKind || "-"} · ${active.axis || "XY"}`
+      : "Veri yüklendiğinde güven sıralı toplam deplasman yöntemleri burada üst üste görünür.";
+  }
+  if (dom.summaryPrimaryLabel) dom.summaryPrimaryLabel.textContent = summaryScene.primaryVariant?.displayLabel || "-";
+  if (dom.summaryCoverageLabel) {
+    dom.summaryCoverageLabel.textContent = active
+      ? `${active.coverage?.label || "-"} · ${active.coverage?.availableLayerCount || 0}/${active.coverage?.profileLayerCount || 0}`
+      : "-";
+  }
+  if (dom.summaryInputLabel) dom.summaryInputLabel.textContent = active?.inputKind?.toUpperCase?.() || active?.inputKind || "-";
+  if (dom.summaryVariantSelect) {
+    if (!active) {
+      dom.summaryVariantSelect.innerHTML = '<option value="">-</option>';
+      dom.summaryVariantSelect.disabled = true;
+      dom.summaryVariantSelect.value = "";
+    } else {
+      const options = summaryScene.validVariants.length
+        ? summaryScene.validVariants
+        : active.variants;
+      dom.summaryVariantSelect.innerHTML = options
+        .map((variant) => {
+          const selected = variant.variantKey === summaryScene.primaryVariant?.variantKey ? " selected" : "";
+          const suffix = variant.valid ? "" : " (gizli/gecersiz)";
+          return `<option value="${escapeHtml(variant.variantKey)}"${selected}>${escapeHtml(`${variant.displayLabel}${suffix}`)}</option>`;
+        })
+        .join("");
+      dom.summaryVariantSelect.disabled = options.length <= 1;
+      dom.summaryVariantSelect.value = summaryScene.primaryVariant?.variantKey || options[0]?.variantKey || "";
+    }
+  }
+  if (dom.summaryVariantLabel) {
+    dom.summaryVariantLabel.textContent = active
+      ? `${summaryScene.visibleVariants.length}/${active.variants.length} varyant gorunur`
+      : "-";
+  }
+  if (dom.summaryCounter) {
+    dom.summaryCounter.textContent = summaryScene.summaryCount > 0
+      ? `${summaryScene.activeSummaryIndex + 1} / ${summaryScene.summaryCount}`
+      : "0 / 0";
+  }
+  if (dom.summaryPrevBtn) dom.summaryPrevBtn.disabled = summaryScene.summaryCount <= 1;
+  if (dom.summaryNextBtn) dom.summaryNextBtn.disabled = summaryScene.summaryCount <= 1;
+  if (dom.summaryDetailBtn) dom.summaryDetailBtn.disabled = !(active?.detailSourceIds?.length);
+}
+
+function renderSummaryMethods(summaryScene) {
+  if (!dom.summaryMethodList || !dom.summaryMethodMeta) return;
+  dom.summaryMethodList.innerHTML = "";
+  const active = summaryScene.activeSummary;
+  if (!active) {
+    dom.summaryMethodMeta.textContent = "0 yöntem";
+    dom.summaryMethodList.innerHTML = '<div class="empty-block">Yöntem listesi batch sonucu geldiğinde görünür.</div>';
+    return;
+  }
+
+  dom.summaryMethodMeta.textContent = `${summaryScene.validVariants.length} geçerli / ${active.variants.length} toplam`;
+  active.variants.forEach((variant, index) => {
+    const entry = document.createElement("label");
+    entry.className = `summary-method${variant.valid ? "" : " is-disabled"}${variant.variantKey === summaryScene.primaryVariant?.variantKey ? " is-primary" : ""}`;
+    const visibilityKey = `${active.summaryId}::${variant.variantKey}`;
+    const checked = state.summaryVariantVisibilityMap[visibilityKey] !== false;
+    entry.innerHTML = variant.valid
+      ? `
+          <input type="checkbox" ${checked ? "checked" : ""} />
+          <span class="summary-method__body">
+            <strong>${escapeHtml(variant.displayLabel)}</strong>
+            <span>${escapeHtml(variant.confidenceLabel || "Destekleyici")} · ${escapeHtml(variant.methodClass)}</span>
+            <small>${escapeHtml(variant.reason)}</small>
+          </span>
+        `
+      : `
+          <span class="summary-method__body">
+            <strong>${escapeHtml(variant.displayLabel)}</strong>
+            <span>Gosterilmiyor · ${escapeHtml(variant.methodClass)}</span>
+            <small>${escapeHtml(variant.reason)}</small>
+          </span>
+        `;
+    entry.style.borderLeft = `4px solid ${summaryVariantColor(variant.variantKey, index)}`;
+    if (variant.valid) {
+      const checkbox = entry.querySelector("input");
+      checkbox?.addEventListener("change", () => toggleSummaryVariantVisibility(active.summaryId, variant.variantKey, !!checkbox.checked));
+    }
+    dom.summaryMethodList.appendChild(entry);
+  });
+}
+
+function renderSummaryWarnings(summaryScene) {
+  if (!dom.summaryWarningList || !dom.summaryWarningMeta) return;
+  const active = summaryScene.activeSummary;
+  const warnings = Array.isArray(active?.warnings) ? active.warnings : [];
+  dom.summaryWarningMeta.textContent = `${warnings.length} not`;
+  if (!active) {
+    dom.summaryWarningList.innerHTML = '<div class="empty-block">Geçerlilik ve sınırlama notları burada görünür.</div>';
+    return;
+  }
+  if (!warnings.length) {
+    dom.summaryWarningList.innerHTML = '<div class="empty-block">Bu kayıt için ek sınırlama notu yok.</div>';
+    return;
+  }
+  dom.summaryWarningList.innerHTML = warnings.map((warning) => `<div class="warning-block">${escapeHtml(warning)}</div>`).join("");
+}
+
+function renderSummaryPlot(summaryScene) {
+  if (!dom.summaryPlotHost) return;
+  const Plotly = globalThis.Plotly;
+  const active = summaryScene.activeSummary;
+  const visibleVariants = summaryScene.visibleVariants || [];
+  const plotState = resolveSummaryPlotState(active, visibleVariants, !!Plotly);
+  dom.summaryPlotHost.classList.toggle("is-empty", plotState.isEmpty);
+  if (plotState.isEmpty) {
+    try {
+      Plotly?.purge(dom.summaryPlotHost);
+    } catch {
+      // Ignore purge failures when no plot exists yet.
+    }
+    dom.summaryPlotHost.innerHTML = `<div class="empty-block empty-block--plot">${plotState.message}</div>`;
+    return;
+  }
+
+  dom.summaryPlotHost.innerHTML = "";
+  const primaryVariantKey = summaryScene.primaryVariant?.variantKey || "";
+  const traces = visibleVariants.map((variant, index) => ({
+    type: "scatter",
+    mode: variant.points.length <= 1 ? "markers" : "lines+markers",
+    name: variant.displayLabel,
+    x: variant.points.map((point) => point.x),
+    y: variant.points.map((point) => point.y),
+    line: {
+      color: summaryVariantColor(variant.variantKey, index),
+      width: variant.variantKey === primaryVariantKey ? 4.5 : 2.4,
+      dash: summaryVariantDash(variant, primaryVariantKey),
+    },
+    marker: {
+      color: summaryVariantColor(variant.variantKey, index),
+      size: variant.variantKey === primaryVariantKey ? 8 : 6,
+      symbol: variant.points.length <= 1 ? "diamond" : "circle",
+    },
+    opacity: variant.variantKey === primaryVariantKey ? 1 : 0.86,
+    hovertemplate: "%{x:.4f} m<br>%{y:.3f} m derinlik<extra></extra>",
+  }));
+
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(255,255,255,0.82)",
+    margin: { l: 88, r: 28, t: 20, b: 78 },
+    showlegend: false,
+    hovermode: "closest",
+    dragmode: "pan",
+    uirevision: `summary|${active.summaryId}`,
+    font: { family: "IBM Plex Mono, monospace", size: 12, color: "#161a1f" },
+    xaxis: {
+      title: { text: "Displacement (m)" },
+      automargin: true,
+      showline: true,
+      linecolor: "rgba(22,26,31,0.4)",
+      gridcolor: "rgba(22,26,31,0.08)",
+      zeroline: false,
+      tickfont: { size: 11 },
+    },
+    yaxis: {
+      title: { text: "Depth (m)" },
+      automargin: true,
+      showline: true,
+      linecolor: "rgba(22,26,31,0.4)",
+      gridcolor: "rgba(22,26,31,0.08)",
+      zeroline: false,
+      tickfont: { size: 11 },
+      autorange: "reversed",
+    },
+  };
+  const config = {
+    responsive: true,
+    displaylogo: false,
+    scrollZoom: true,
+    modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
+  };
+  Promise.resolve(Plotly.newPlot(dom.summaryPlotHost, traces, layout, config)).catch(() => {
+    // Ignore render promise failures here; the next state change will retry.
+  });
 }
 
 function renderSourceList(scene) {
   if (!dom.sourceList) return;
   dom.sourceList.innerHTML = "";
-  dom.sourceMeta.textContent = `${scene.sourceCount} sources`;
+  dom.sourceMeta.textContent = formatViewerSourceMeta({
+    sources: scene.sources || [],
+    sourceCount: scene.sourceCount,
+    fileCount: state.selectedFiles.length,
+  });
   if (!scene.sources.length) {
     dom.sourceList.innerHTML = '<div class="empty-block">Henüz source catalog yok. Dosyaları seçip batch çalıştır.</div>';
     return;
@@ -1251,14 +1678,15 @@ function renderCompareList(scene) {
 function renderAxisControls(scene) {
   const chartType = String(scene.activeChart?.chartType || "").toLowerCase();
   const isSpectrum = chartType === "spectrum";
+  const scopedPeriodMax = getScopedSpectrumPeriodMax(state.spectrumPeriodMaxMap, scene);
 
   if (dom.periodMaxInput) {
     dom.periodMaxInput.disabled = !isSpectrum;
-    dom.periodMaxInput.value = String(state.spectrumPeriodMax || "");
+    dom.periodMaxInput.value = scopedPeriodMax;
     if (!isSpectrum) dom.periodMaxInput.placeholder = "spectrum only";
     else dom.periodMaxInput.placeholder = "auto";
   }
-  if (dom.periodMaxResetBtn) dom.periodMaxResetBtn.disabled = !isSpectrum || !String(state.spectrumPeriodMax || "").trim();
+  if (dom.periodMaxResetBtn) dom.periodMaxResetBtn.disabled = !isSpectrum || !scopedPeriodMax;
   if (dom.logXToggle) {
     dom.logXToggle.checked = !!state.logX;
     dom.logXToggle.disabled = !scene.activeChart;
@@ -1392,7 +1820,7 @@ function renderPlot(scene) {
 
   dom.plotHost.innerHTML = "";
   const chartType = String(scene.activeChart?.chartType || "").toLowerCase();
-  const requestedPeriodMax = Number(String(state.spectrumPeriodMax || "").trim());
+  const requestedPeriodMax = Number(getScopedSpectrumPeriodMax(state.spectrumPeriodMaxMap, scene));
   const spectrumPeriodMax = chartType === "spectrum" && Number.isFinite(requestedPeriodMax) && requestedPeriodMax > 0 ? requestedPeriodMax : null;
   const traces = entries.map((entry, index) => buildPlotTrace(entry, index, chartType, spectrumPeriodMax));
 
@@ -1459,7 +1887,7 @@ function renderPlot(scene) {
     });
 }
 
-function renderMetricCards(scene) {
+function renderMetricCards(scene, summaryScene = null) {
   if (!dom.metrics) return;
   const loaded = summarizeLoadedTypes();
   const pairStats = detectPairs(
@@ -1469,9 +1897,13 @@ function renderMetricCards(scene) {
     state.shellMode === "legacy" && !!dom.manualPairingEnabled?.checked
   );
   const metrics = state.metrics || {};
+  const activeSummary = summaryScene?.activeSummary || null;
   const cards = [
     ["Shell mode", state.shellMode],
     ["View mode", state.viewerChartMode],
+    ["Summary records", String(summaryScene?.summaryCount ?? 0)],
+    ["Active summary", activeSummary?.summaryLabel || "-"],
+    ["Primary method", summaryScene?.primaryVariant?.displayLabel || "-"],
     ["Active source", scene.activeSource?.sourceLabel || "-"],
     ["Active chart", scene.activeChart?.chartLabel || "-"],
     ["Loaded XLSX", String(loaded.xlsx)],
@@ -1806,7 +2238,7 @@ function refreshButtons() {
 
   if (dom.runBtn) dom.runBtn.disabled = !canRun;
   if (dom.zipBtn) dom.zipBtn.disabled = state.isRunning || state.results.length === 0;
-  if (dom.clearAllBtn) dom.clearAllBtn.disabled = state.isRunning || (!state.selectedFiles.length && !state.results.length && !state.sourceCatalog.length && !state.logs.length);
+  if (dom.clearAllBtn) dom.clearAllBtn.disabled = state.isRunning || (!state.selectedFiles.length && !state.results.length && !state.sourceCatalog.length && !state.summaryCatalog.length && !state.logs.length);
   if (dom.folderInput) dom.folderInput.disabled = state.isRunning;
   if (dom.fileInput) dom.fileInput.disabled = state.isRunning;
   if (dom.manualPairingEnabled) dom.manualPairingEnabled.disabled = state.isRunning || !legacyMode;
@@ -1848,6 +2280,12 @@ function syncFilterInputs() {
 }
 
 function renderAll() {
+  const summaryScene = syncSummarySelection();
+  renderSummaryList(summaryScene);
+  renderSummaryStage(summaryScene);
+  renderSummaryMethods(summaryScene);
+  renderSummaryWarnings(summaryScene);
+  renderSummaryPlot(summaryScene);
   const scene = syncSourceViewerSelection();
   renderSourceList(scene);
   renderFamilyList(scene);
@@ -1857,12 +2295,13 @@ function renderAll() {
   renderSeriesToggleList(scene);
   renderStage(scene);
   renderPlot(scene);
-  renderMetricCards(scene);
+  renderMetricCards(scene, summaryScene);
   renderArtifacts();
   renderSelectedFiles();
   renderManualPairing();
   updateSelectionStats();
   refreshButtons();
+  syncUrlState(summaryScene, scene);
 }
 
 function restoreCachedRunIfAvailable() {
@@ -1871,9 +2310,14 @@ function restoreCachedRunIfAvailable() {
       if (!snapshot || !Array.isArray(snapshot.results) || !snapshot.metrics) return;
       state.results = snapshot.results.map((item, index) => classifyViewerResult(item, index));
       state.sourceCatalog = Array.isArray(snapshot.sourceCatalog) ? snapshot.sourceCatalog : [];
+      state.summaryCatalog = Array.isArray(snapshot.summaryCatalog) ? snapshot.summaryCatalog : [];
       state.errors = Array.isArray(snapshot.errors) ? snapshot.errors : [];
       state.metrics = snapshot.metrics;
       if (snapshot.viewerPrefs) applyViewerPrefs(snapshot.viewerPrefs, { persist: false });
+      const urlState = loadUrlStatePreference();
+      if (urlState?.viewerPrefs && Object.keys(urlState.viewerPrefs).length) {
+        applyViewerPrefs(urlState.viewerPrefs, { persist: false });
+      }
       renderAll();
       appendLog("info", `Restored cached batch results${snapshot.savedAt ? ` from ${snapshot.savedAt}` : ""}.`);
       setStatus("Restored cached batch results");
@@ -1917,6 +2361,7 @@ function handleSelectionChange(sourceLabel) {
 
 function handleModeToggle() {
   appendLog("info", `Input mode changed: ${dom.useDb3Directly?.checked ? "DB3 direct" : "Excel/strain"}`);
+  syncFilterInputs();
   renderAll();
 }
 
@@ -2007,8 +2452,9 @@ function addManualPair(xOverride = null, yOverride = null, options = {}) {
   return true;
 }
 
-function clearManualPairs() {
+function clearManualPairs({ skipConfirm = false } = {}) {
   if (!state.manualPairs.length) return;
+  if (!skipConfirm && !confirmDestructiveAction("Tum manuel X/Y eslestirmeleri silinecek. Devam edilsin mi?")) return;
   state.manualPairs = [];
   clearManualStage();
   appendLog("info", "All manual pairs cleared.");
@@ -2017,22 +2463,26 @@ function clearManualPairs() {
 
 function clearSelectedFiles(options = {}) {
   const { clearLogs = false, resetViewerPrefs = false } = options;
-  if (!state.selectedFiles.length && !state.results.length && !state.sourceCatalog.length && !(clearLogs && state.logs.length)) return;
+  if (!state.selectedFiles.length && !state.results.length && !state.sourceCatalog.length && !state.summaryCatalog.length && !(clearLogs && state.logs.length)) return;
   state.selectedFiles = [];
   state.ignoredFilesCount = 0;
   state.manualPairs = [];
   state.pairSuggestions = [];
   state.results = [];
   state.sourceCatalog = [];
+  state.summaryCatalog = [];
   state.errors = [];
   state.metrics = null;
+  state.activeSummaryId = "";
   state.activeSourceId = "";
   state.activeFamilyKey = "";
   state.activeChartKey = "";
   state.activeLayerIndex = 0;
   state.compareSourceIds = [];
+  state.summaryVariantVisibilityMap = {};
+  state.summaryPrimaryVariantMap = {};
   state.seriesVisibilityMap = {};
-  state.spectrumPeriodMax = "";
+  state.spectrumPeriodMaxMap = {};
   state.logX = false;
   state.logY = false;
   if (dom.folderInput) dom.folderInput.value = "";
@@ -2059,6 +2509,33 @@ function clearSelectedFiles(options = {}) {
 
 function clearEverything() {
   clearSelectedFiles({ clearLogs: true, resetViewerPrefs: true });
+}
+
+function handleClearSelectedFiles() {
+  if (
+    !state.selectedFiles.length &&
+    !state.results.length &&
+    !state.sourceCatalog.length &&
+    !state.summaryCatalog.length
+  ) {
+    return;
+  }
+  if (!confirmDestructiveAction("Secili dosyalar, eslestirmeler ve mevcut ciktilar temizlenecek. Devam edilsin mi?")) return;
+  clearSelectedFiles();
+}
+
+function handleClearEverything() {
+  if (
+    !state.selectedFiles.length &&
+    !state.results.length &&
+    !state.sourceCatalog.length &&
+    !state.summaryCatalog.length &&
+    !state.logs.length
+  ) {
+    return;
+  }
+  if (!confirmDestructiveAction("Tum workspace sifirlanacak. Dosyalar, ciktilar, loglar ve kayitli viewer tercihleri temizlenecek. Devam edilsin mi?")) return;
+  clearEverything();
 }
 
 function parseNumberInput(value, fallback) {
@@ -2266,6 +2743,7 @@ async function executeJobsInPool(jobs) {
 function mergeJobSummaries(jobOutputs, baseOptions, detectedStats) {
   const results = [];
   const sourceCatalog = [];
+  const summaryCatalog = [];
   const errors = [];
   let method23Metrics = null;
   let pairsProcessed = 0;
@@ -2276,6 +2754,7 @@ function mergeJobSummaries(jobOutputs, baseOptions, detectedStats) {
   jobOutputs.forEach(({ job, summary }) => {
     (summary?.results || []).forEach((item) => results.push(item));
     (summary?.sourceCatalog || []).forEach((item) => sourceCatalog.push(item));
+    (summary?.summaryCatalog || []).forEach((item) => summaryCatalog.push(item));
     (summary?.errors || []).forEach((item) => errors.push(item));
     appendSummaryWarnings(job.label, summary?.logs || []);
     const metrics = summary?.metrics || {};
@@ -2297,6 +2776,7 @@ function mergeJobSummaries(jobOutputs, baseOptions, detectedStats) {
   return {
     results,
     sourceCatalog,
+    summaryCatalog,
     errors,
     metrics: {
       pairsDetected: detectedStats.pairs,
@@ -2368,6 +2848,7 @@ async function runBatch() {
         return {
           results: summary?.results || [],
           sourceCatalog: summary?.sourceCatalog || [],
+          summaryCatalog: summary?.summaryCatalog || [],
           errors: summary?.errors || [],
           metrics: summary?.metrics || null,
         };
@@ -2377,6 +2858,7 @@ async function runBatch() {
   state.isRunning = false;
   state.results = (merged.results || []).map((item, index) => classifyViewerResult(item, index));
   state.sourceCatalog = Array.isArray(merged.sourceCatalog) ? merged.sourceCatalog : [];
+  state.summaryCatalog = Array.isArray(merged.summaryCatalog) ? merged.summaryCatalog : [];
   state.errors = merged.errors || [];
   state.metrics = merged.metrics || null;
   state.snapshotPersistPromise = persistRunSnapshot()
@@ -2419,6 +2901,20 @@ async function requestZipDownload() {
 }
 
 function bindStageNavigation() {
+  dom.summaryPrevBtn?.addEventListener("click", () => {
+    const scene = syncSummarySelection();
+    const item = cycleSceneItem(scene.summaries, scene.activeSummaryId, -1, (summary) => summary.summaryId);
+    if (item) setActiveSummary(item.summaryId);
+  });
+  dom.summaryNextBtn?.addEventListener("click", () => {
+    const scene = syncSummarySelection();
+    const item = cycleSceneItem(scene.summaries, scene.activeSummaryId, 1, (summary) => summary.summaryId);
+    if (item) setActiveSummary(item.summaryId);
+  });
+  dom.summaryDetailBtn?.addEventListener("click", () => {
+    const scene = syncSummarySelection();
+    if (scene.activeSummary) focusSummaryDetail(scene.activeSummary);
+  });
   dom.sourcePrevBtn?.addEventListener("click", () => {
     const scene = syncSourceViewerSelection();
     const item = cycleSceneItem(scene.sources, scene.activeSourceId, -1, (source) => source.sourceId);
@@ -2464,9 +2960,9 @@ function attachEventListeners() {
   dom.addManualPairBtn?.addEventListener("click", () => addManualPair());
   dom.autoPairBtn?.addEventListener("click", autoPair);
   dom.applyAllSuggestionsBtn?.addEventListener("click", applyAllPairSuggestions);
-  dom.clearFilesBtn?.addEventListener("click", clearSelectedFiles);
-  dom.clearAllBtn?.addEventListener("click", clearEverything);
-  dom.clearPairsBtn?.addEventListener("click", clearManualPairs);
+  dom.clearFilesBtn?.addEventListener("click", handleClearSelectedFiles);
+  dom.clearAllBtn?.addEventListener("click", handleClearEverything);
+  dom.clearPairsBtn?.addEventListener("click", () => clearManualPairs());
   dom.manualXSelect?.addEventListener("change", handleManualSelectionChange);
   dom.manualYSelect?.addEventListener("change", handleManualSelectionChange);
   dom.clearManualStageBtn?.addEventListener("click", clearManualStage);
@@ -2477,10 +2973,27 @@ function attachEventListeners() {
   dom.compareAxisXToggle?.addEventListener("change", () => toggleCompareAxisBulk("X", !!dom.compareAxisXToggle?.checked));
   dom.compareAxisYToggle?.addEventListener("change", () => toggleCompareAxisBulk("Y", !!dom.compareAxisYToggle?.checked));
   dom.compareClearBtn?.addEventListener("click", clearCompareSources);
+  dom.summaryVariantSelect?.addEventListener("change", () => {
+    const scene = syncSummarySelection();
+    if (!scene.activeSummary || !dom.summaryVariantSelect?.value) return;
+    setSummaryPrimaryVariant(scene.activeSummary.summaryId, dom.summaryVariantSelect.value);
+  });
   dom.periodMaxInput?.addEventListener("change", () => setSpectrumPeriodMax(dom.periodMaxInput?.value || ""));
   dom.periodMaxResetBtn?.addEventListener("click", () => setSpectrumPeriodMax(""));
   dom.logXToggle?.addEventListener("change", () => setLogAxis("x", !!dom.logXToggle?.checked));
   dom.logYToggle?.addEventListener("change", () => setLogAxis("y", !!dom.logYToggle?.checked));
+  dom.detailViewerLink?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openDetailDrawer(dom.detailViewerPanel);
+    try {
+      dom.detailViewerPanel?.scrollIntoView({
+        behavior: resolveScrollBehavior(prefersReducedMotion()),
+        block: "start",
+      });
+    } catch {
+      // Ignore scroll failures in older browsers.
+    }
+  });
   dom.runBtn?.addEventListener("click", () => {
     runBatch().catch((error) => {
       state.isRunning = false;
@@ -2503,6 +3016,7 @@ function attachEventListeners() {
   globalThis.addEventListener("resize", () => {
     try {
       globalThis.Plotly?.Plots?.resize(dom.plotHost);
+      globalThis.Plotly?.Plots?.resize(dom.summaryPlotHost);
     } catch {
       // Ignore resize failures when no plot exists yet.
     }
@@ -2511,6 +3025,7 @@ function attachEventListeners() {
     renderAll();
     try {
       globalThis.Plotly?.Plots?.resize(dom.plotHost);
+      globalThis.Plotly?.Plots?.resize(dom.summaryPlotHost);
     } catch {
       // Ignore resize failures when no plot exists yet.
     }
@@ -2530,7 +3045,12 @@ function bootstrap() {
   const restoredViewerPrefs = loadViewerPrefs();
   if (restoredViewerPrefs) applyViewerPrefs(restoredViewerPrefs, { persist: false });
 
-  setShellMode(loadShellModePreference(), { persist: false });
+  const urlState = loadUrlStatePreference();
+  if (urlState?.viewerPrefs && Object.keys(urlState.viewerPrefs).length) {
+    applyViewerPrefs(urlState.viewerPrefs, { persist: false });
+  }
+
+  setShellMode(urlState?.shellMode || loadShellModePreference(), { persist: false });
   syncFilterInputs();
   renderProgress();
   renderAll();

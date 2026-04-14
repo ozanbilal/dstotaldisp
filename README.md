@@ -3,6 +3,16 @@
 DEEPSOIL sonuc dosyalarindan toplam ve goreceli yerdegistirme profillerini ureten arac.
 Hem CLI (`GetDisp4.py`) hem de tarayici tabanli WASM arayuz (`web-ui/`) ayni hesap cekirdegini (`disp_core.py`) kullanir.
 
+## Mimari Diyagram
+
+- [dstotaldisp-overview.drawio](docs/dstotaldisp-overview.drawio)
+
+## Kullanici Dokumantasyonu
+
+- Site uzerinden erisilen kullanim kilavuzu: `web-ui/docs.html`
+- Kanonik kaynak: `docs/user-guide.md`
+- Repo davranisi, UI akisi veya yontem gecerlilik kurallari degistiginde bu iki nokta birlikte guncellenmelidir.
+
 ## Ne Cozer?
 
 Bu proje, su iki dunyayi ayni cikti setinde birlestirir:
@@ -369,6 +379,13 @@ Railway notu:
 
 UI ozellikleri:
 
+- Summary-first ana yuzey:
+  - `Toplam Deplasman Profili` sahnesi gecerli varyantlari guven sirasina gore tek grafikte overlay eder
+  - en guvenilir egri baskin, diger gecerli yontemler destekleyici olarak gorunur
+  - gecersiz yontemler cizilmez; nedenleri not olarak listelenir
+- `Detayli inceleme` bolumu:
+  - mevcut source/family/chart explorer korunur
+  - ozet sahneden secilen kayit ham egri seviyesinde burada incelenebilir
 - Folder select (`webkitdirectory`) + direkt dosya secimi
 - Secilen dosya listesi, pair sayaci ve yuklenmis/aktif aday ozetleri
 - `Method-2 outputs` ve `Method-3 outputs` ayri ayri secilebilir

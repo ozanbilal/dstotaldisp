@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepSoil Total Displacement Docs</title>
+    <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css?v=20260410b" />
+    <style>
+      .docs-shell {
+        max-width: 1440px;
+        margin: 0 auto;
+      }
+
+      .docs-layout {
+        display: grid;
+        grid-template-columns: minmax(220px, 18vw) minmax(0, 1fr);
+        gap: 14px;
+        align-items: start;
+      }
+
+      .docs-sidebar,
+      .docs-content {
+        min-width: 0;
+      }
+
+      .docs-sidebar {
+        position: sticky;
+        top: 18px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .docs-nav {
+        display: grid;
+        gap: 8px;
+      }
+
+      .docs-nav a {
+        color: var(--ink);
+        text-decoration: none;
+        padding: 8px 10px;
+        border: 1px solid rgba(22, 26, 31, 0.12);
+        background: rgba(255, 255, 255, 0.58);
+        font-size: 0.72rem;
+      }
+
+      .docs-content {
+        display: grid;
+        gap: 14px;
+      }
+
+      .docs-article {
+        padding: 20px;
+        line-height: 1.65;
+      }
+
+      .docs-article h1,
+      .docs-article h2,
+      .docs-article h3 {
+        scroll-margin-top: 18px;
+      }
+
+      .docs-article h1 {
+        margin-top: 0;
+        font-size: clamp(1.7rem, 2.1vw, 2.4rem);
+      }
+
+      .docs-article h2 {
+        margin-top: 28px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(22, 26, 31, 0.08);
+      }
+
+      .docs-article p,
+      .docs-article li {
+        font-size: 0.82rem;
+      }
+
+      .docs-article ul,
+      .docs-article ol {
+        margin: 0;
+        padding-left: 20px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .docs-article code {
+        padding: 1px 4px;
+        background: rgba(22, 26, 31, 0.08);
+      }
+
+      .docs-article pre {
+        overflow: auto;
+        padding: 14px;
+        border: 1px solid rgba(22, 26, 31, 0.12);
+        background: rgba(15, 18, 22, 0.94);
+        color: #d6e0d9;
+      }
+
+      .docs-article pre code {
+        padding: 0;
+        background: none;
+      }
+
+      .docs-meta {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .docs-chip {
+        padding: 9px 12px;
+        border: 1px solid rgba(22, 26, 31, 0.12);
+        background: rgba(255, 255, 255, 0.58);
+        font-size: 0.72rem;
+      }
+
+      .docs-loading {
+        min-height: 240px;
+      }
+
+      @media (max-width: 960px) {
+        .docs-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .docs-sidebar {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell docs-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">DeepSoil Docs</p>
+          <h1>Kullanim ve yorumlama dokumantasyonu</h1>
+          <p class="subtitle">
+            Bu sayfa tek kanonik kaynak olan <code>docs/user-guide.md</code> dosyasini render eder. Summary-first akis, detail drawer davranisi ve URL paylasim kurali degistikce bu kaynak da guncellenmelidir.
+          </p>
+          <div class="hero-links">
+            <a class="hero-link" href="./">Ana arayuz</a>
+            <a class="hero-link hero-link--subtle" href="../docs/user-guide.md">Markdown kaynagi</a>
+          </div>
+        </div>
+        <div class="hero-controls">
+          <div class="docs-meta">
+            <div class="docs-chip">Son guncelleme: 2026-04-09</div>
+            <div class="docs-chip">Kaynak sistem: DeepSoil</div>
+            <div class="docs-chip">RSSeismic: adapter siniri hazir</div>
+            <div class="docs-chip">Detail viewer: varsayilan kapali</div>
+          </div>
+        </div>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="docs-sidebar">
+          <section class="panel compact-panel">
+            <div class="panel-title-row">
+              <div>
+                <p class="eyebrow">Navigate</p>
+                <h2>Bolumler</h2>
+              </div>
+            </div>
+            <nav id="docsNav" class="docs-nav">
+              <div class="empty-block">Icerik yukleniyor.</div>
+            </nav>
+          </section>
+        </aside>
+
+        <section class="docs-content">
+          <article id="docContent" class="panel docs-article docs-loading">
+            <div class="empty-block">Dokumantasyon yukleniyor.</div>
+          </article>
+        </section>
+      </div>
+    </main>
+
+    <script type="module">
+    const DOC_URL = "../docs/user-guide.md?v=20260410b";
+
+      function slugify(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 80);
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function renderInline(value) {
+        return escapeHtml(value)
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+      }
+
+      function renderMarkdown(markdown) {
+        const html = [];
+        const lines = String(markdown || "").split(/\r?\n/);
+        let paragraph = [];
+        let listType = "";
+        let inCode = false;
+        let codeLang = "";
+        let codeLines = [];
+
+        const flushParagraph = () => {
+          if (!paragraph.length) return;
+          html.push(`<p>${renderInline(paragraph.join(" "))}</p>`);
+          paragraph = [];
+        };
+
+        const closeList = () => {
+          if (!listType) return;
+          html.push(listType === "ol" ? "</ol>" : "</ul>");
+          listType = "";
+        };
+
+        const flushCode = () => {
+          if (!codeLines.length) return;
+          html.push(
+            `<pre><code class="language-${escapeHtml(codeLang || "text")}">${escapeHtml(codeLines.join("\n"))}</code></pre>`
+          );
+          codeLang = "";
+          codeLines = [];
+        };
+
+        for (const rawLine of lines) {
+          const line = rawLine.replace(/\t/g, "  ");
+          const fenceMatch = line.match(/^```(.*)$/);
+          if (fenceMatch) {
+            flushParagraph();
+            closeList();
+            if (inCode) {
+              flushCode();
+              inCode = false;
+            } else {
+              inCode = true;
+              codeLang = String(fenceMatch[1] || "").trim();
+              codeLines = [];
+            }
+            continue;
+          }
+
+          if (inCode) {
+            codeLines.push(rawLine);
+            continue;
+          }
+
+          if (!line.trim()) {
+            flushParagraph();
+            closeList();
+            continue;
+          }
+
+          const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+          if (headingMatch) {
+            flushParagraph();
+            closeList();
+            const level = headingMatch[1].length;
+            const text = headingMatch[2].trim();
+            const slug = slugify(text);
+            html.push(`<h${level} id="${slug}">${renderInline(text)}</h${level}>`);
+            continue;
+          }
+
+          const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+          if (orderedMatch) {
+            flushParagraph();
+            if (listType !== "ol") {
+              closeList();
+              listType = "ol";
+              html.push("<ol>");
+            }
+            html.push(`<li>${renderInline(orderedMatch[1].trim())}</li>`);
+            continue;
+          }
+
+          const bulletMatch = line.match(/^-\s+(.+)$/);
+          if (bulletMatch) {
+            flushParagraph();
+            if (listType !== "ul") {
+              closeList();
+              listType = "ul";
+              html.push("<ul>");
+            }
+            html.push(`<li>${renderInline(bulletMatch[1].trim())}</li>`);
+            continue;
+          }
+
+          paragraph.push(line.trim());
+        }
+
+        flushParagraph();
+        closeList();
+        flushCode();
+        return html.join("\n");
+      }
+
+      function buildNav(root, navHost) {
+        const headings = Array.from(root.querySelectorAll("h2, h3"));
+        if (!headings.length) {
+          navHost.innerHTML = '<div class="empty-block">Bolum bulunamadi.</div>';
+          return;
+        }
+        navHost.innerHTML = headings
+          .map((heading) => {
+            const level = heading.tagName === "H3" ? " style=\"margin-left: 12px;\"" : "";
+            return `<a href="#${heading.id}"${level}>${escapeHtml(heading.textContent || "")}</a>`;
+          })
+          .join("");
+      }
+
+      async function boot() {
+        const article = document.getElementById("docContent");
+        const navHost = document.getElementById("docsNav");
+        try {
+          const response = await fetch(DOC_URL);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const markdown = await response.text();
+          article.classList.remove("docs-loading");
+          article.innerHTML = renderMarkdown(markdown);
+          buildNav(article, navHost);
+        } catch (error) {
+          article.classList.remove("docs-loading");
+          article.innerHTML = `<div class="empty-block">Dokumantasyon yuklenemedi: ${escapeHtml(error.message || String(error))}</div>`;
+          navHost.innerHTML = '<div class="empty-block">Icerik yuklenemedi.</div>';
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>
