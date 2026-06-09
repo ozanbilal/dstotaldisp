@@ -135,8 +135,26 @@ app.get("/api/tier", (req, res) => {
   res.json({ tier: claims.tier || 0, plan: claims.plan || "free" });
 });
 
+function sendPythonFile(res, filePath) {
+  res.type("text/x-python");
+  res.sendFile(filePath, (error) => {
+    if (error && !res.headersSent) {
+      res.status(error.statusCode || 404).type("text/plain").send("Python module not found");
+    }
+  });
+}
+
+app.get(["/disp_core.py", "/web-ui/disp_core.py"], (req, res) => {
+  sendPythonFile(res, path.join(__dirname, "disp_core.py"));
+});
+
 // ── Static File Serving ──
 app.use(express.static(__dirname, {
+  maxAge: IS_DEV ? 0 : "1h",
+  etag: true,
+  index: "index.html",
+}));
+app.use("/web-ui", express.static(__dirname, {
   maxAge: IS_DEV ? 0 : "1h",
   etag: true,
   index: "index.html",
@@ -154,6 +172,9 @@ app.use("/vendor", express.static(path.join(__dirname, "vendor"), {
 
 // SPA fallback
 app.get("*", (req, res) => {
+  if (path.extname(req.path)) {
+    return res.status(404).type("text/plain").send("Not found");
+  }
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
