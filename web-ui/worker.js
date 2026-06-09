@@ -1,5 +1,5 @@
 const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v0.27.3/full/";
-const APP_VERSION = "20260408c";
+const APP_VERSION = "20260609a";
 
 importScripts(`${PYODIDE_BASE}pyodide.js`);
 
@@ -43,6 +43,42 @@ async function toUint8Array(fileItem) {
   throw new Error("Invalid file payload: expected bytes or File/Blob.");
 }
 
+function isHtmlDocument(text) {
+  return /^\s*<!doctype\s+html/i.test(text || "") || /^\s*<html[\s>]/i.test(text || "");
+}
+
+async function fetchPythonModule(label, urls, requiredSnippet) {
+  const failures = [];
+  const uniqueUrls = Array.from(new Set(urls));
+  for (const baseUrl of uniqueUrls) {
+    const url = new URL(baseUrl);
+    url.searchParams.set("v", APP_VERSION);
+    try {
+      const response = await fetch(url.href, { cache: "no-store" });
+      if (!response.ok) {
+        failures.push(`${url.pathname}: HTTP ${response.status}`);
+        continue;
+      }
+      const text = await response.text();
+      if (isHtmlDocument(text)) {
+        failures.push(`${url.pathname}: HTML returned instead of Python`);
+        continue;
+      }
+      if (requiredSnippet && !text.includes(requiredSnippet)) {
+        failures.push(`${url.pathname}: expected Python marker not found`);
+        continue;
+      }
+      return text;
+    } catch (error) {
+      failures.push(`${url.pathname}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(
+    `${label} yuklenemedi. Repo kokunden server baslatilmali; /disp_core.py Python olarak servis edilmeli. ` +
+      `Denenenler: ${failures.join("; ")}`
+  );
+}
+
 async function ensureInitialized() {
   if (initPromise) {
     return initPromise;
@@ -73,20 +109,21 @@ await micropip.install("openpyxl")
 
     postStatus("Python modulleri yukleniyor...", "boot", 62);
 
-    const [coreResp, entryResp] = await Promise.all([
-      fetch(`../disp_core.py?v=${APP_VERSION}`),
-      fetch(`./py/pyodide_entry.py?v=${APP_VERSION}`),
+    const [coreCode, entryCode] = await Promise.all([
+      fetchPythonModule(
+        "disp_core.py",
+        [
+          new URL("../disp_core.py", self.location.href).href,
+          new URL("/disp_core.py", self.location.origin).href,
+        ],
+        "def process_batch_files"
+      ),
+      fetchPythonModule(
+        "pyodide_entry.py",
+        [new URL("./py/pyodide_entry.py", self.location.href).href],
+        "def run_batch_from_fs"
+      ),
     ]);
-
-    if (!coreResp.ok) {
-      throw new Error(`disp_core.py fetch failed (${coreResp.status})`);
-    }
-    if (!entryResp.ok) {
-      throw new Error(`pyodide_entry.py fetch failed (${entryResp.status})`);
-    }
-
-    const coreCode = await coreResp.text();
-    const entryCode = await entryResp.text();
 
     if (!pyodide.FS.analyzePath("/app").exists) {
       pyodide.FS.mkdir("/app");

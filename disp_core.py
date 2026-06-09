@@ -2198,6 +2198,104 @@ def _db_source_family_single(bundle: Mapping[str, Any]) -> Dict[str, Any] | None
     return _source_family("db-motion", "DB Motion", "time", charts, supports_layer_selection=True)
 
 
+def _db_source_family_single_layers(bundle: Mapping[str, Any]) -> Dict[str, Any] | None:
+    layers = _source_layers(bundle.get("layer_numbers", []), bundle.get("depths", []))
+    time = np.asarray(bundle.get("time_history_time", []), dtype=float)
+    period = np.asarray(bundle.get("rs_period", []), dtype=float)
+    frequency = np.asarray(bundle.get("fas_frequency", []), dtype=float)
+    axis = str(bundle.get("axis", "")) or "Input"
+    charts = [
+        _source_chart(
+            "db-layer-acceleration",
+            "DB Layer Acceleration",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Acceleration (g)",
+            layer_views=_single_layer_views(layers, time, bundle.get("acc_matrix", np.zeros((0, 0))), f"DB {axis} Acceleration", "db-acc"),
+        ),
+        _source_chart(
+            "db-layer-velocity",
+            "DB Layer Velocity",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Velocity",
+            layer_views=_single_layer_views(layers, time, bundle.get("vel_matrix", np.zeros((0, 0))), f"DB {axis} Velocity", "db-vel"),
+        ),
+        _source_chart(
+            "db-layer-displacement",
+            "DB Layer Displacement",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Displacement",
+            layer_views=_single_layer_views(layers, time, bundle.get("disp_output_matrix", np.zeros((0, 0))), f"DB {axis} Displacement", "db-disp"),
+        ),
+        _source_chart(
+            "db-layer-arias",
+            "DB Layer Arias Intensity",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Arias Intensity",
+            layer_views=_single_layer_views(layers, time, bundle.get("arias_matrix", np.zeros((0, 0))), f"DB {axis} Arias", "db-arias"),
+        ),
+        _source_chart(
+            "db-layer-strain",
+            "DB Layer Strain",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Strain",
+            layer_views=_single_layer_views(layers, time, bundle.get("strain_matrix", np.zeros((0, 0))), f"DB {axis} Strain", "db-strain"),
+        ),
+        _source_chart(
+            "db-layer-stress",
+            "DB Layer Stress",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Stress",
+            layer_views=_single_layer_views(layers, time, bundle.get("stress_matrix", np.zeros((0, 0))), f"DB {axis} Stress", "db-stress"),
+        ),
+        _source_chart(
+            "db-layer-response-spectrum",
+            "DB Layer Response Spectrum",
+            "DB Response Spectra",
+            "spectrum",
+            "Period (s)",
+            "Spectral Acceleration",
+            layer_views=_single_layer_views(layers, period, bundle.get("rs_matrix", np.zeros((0, 0))), f"DB {axis} RS", "db-rs"),
+        ),
+        _source_chart(
+            "db-layer-fourier",
+            "DB Layer Fourier",
+            "DB Fourier Spectra",
+            "fourier",
+            "Frequency (Hz)",
+            "Fourier Amplitude",
+            layer_views=_single_layer_views(layers, frequency, bundle.get("fas_matrix", np.zeros((0, 0))), f"DB {axis} FAS", "db-fas"),
+        ),
+        _source_chart(
+            "db-layer-fourier-ratio",
+            "DB Layer Fourier Ratio",
+            "DB Fourier Spectra",
+            "fourier",
+            "Frequency (Hz)",
+            "Fourier Amplitude Ratio",
+            layer_views=_single_layer_views(
+                layers,
+                frequency,
+                bundle.get("fas_ratio_matrix", np.zeros((0, 0))),
+                f"DB {axis} FAS Ratio",
+                "db-fas-ratio",
+            ),
+        ),
+    ]
+    return _source_family("db-layer-series", "DB Layer Series", "time", charts, supports_layer_selection=True)
+
+
 def _db_source_family_pair(summary_df: pd.DataFrame, x_bundle: Mapping[str, Any], y_bundle: Mapping[str, Any]) -> Dict[str, Any] | None:
     layers = _source_layers(x_bundle.get("layer_numbers", []), x_bundle.get("depths", []))
     charts = [
@@ -2269,6 +2367,127 @@ def _db_source_family_pair(summary_df: pd.DataFrame, x_bundle: Mapping[str, Any]
         ),
     ]
     return _source_family("db-motion", "DB Motion", "time", charts, supports_layer_selection=True, supports_overlay=True)
+
+
+def _db_source_family_pair_layers(x_bundle: Mapping[str, Any], y_bundle: Mapping[str, Any]) -> Dict[str, Any] | None:
+    layers = _source_layers(x_bundle.get("layer_numbers", []), x_bundle.get("depths", []))
+    charts = [
+        _source_chart(
+            "db-layer-acceleration",
+            "DB Layer Acceleration",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Acceleration (g)",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("time_history_time", []), dtype=float),
+                x_bundle.get("acc_matrix", np.zeros((0, 0))),
+                "DB X Acceleration",
+                "db-x-acc",
+                np.asarray(y_bundle.get("time_history_time", []), dtype=float),
+                y_bundle.get("acc_matrix", np.zeros((0, 0))),
+                "DB Y Acceleration",
+                "db-y-acc",
+            ),
+        ),
+        _source_chart(
+            "db-layer-velocity",
+            "DB Layer Velocity",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Velocity",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("time_history_time", []), dtype=float),
+                x_bundle.get("vel_matrix", np.zeros((0, 0))),
+                "DB X Velocity",
+                "db-x-vel",
+                np.asarray(y_bundle.get("time_history_time", []), dtype=float),
+                y_bundle.get("vel_matrix", np.zeros((0, 0))),
+                "DB Y Velocity",
+                "db-y-vel",
+            ),
+        ),
+        _source_chart(
+            "db-layer-strain",
+            "DB Layer Strain",
+            "DB Time Histories",
+            "time",
+            "Time (s)",
+            "Strain",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("time_history_time", []), dtype=float),
+                x_bundle.get("strain_matrix", np.zeros((0, 0))),
+                "DB X Strain",
+                "db-x-strain",
+                np.asarray(y_bundle.get("time_history_time", []), dtype=float),
+                y_bundle.get("strain_matrix", np.zeros((0, 0))),
+                "DB Y Strain",
+                "db-y-strain",
+            ),
+        ),
+        _source_chart(
+            "db-layer-response-spectrum",
+            "DB Layer Response Spectrum",
+            "DB Response Spectra",
+            "spectrum",
+            "Period (s)",
+            "Spectral Acceleration",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("rs_period", []), dtype=float),
+                x_bundle.get("rs_matrix", np.zeros((0, 0))),
+                "DB X RS",
+                "db-x-rs",
+                np.asarray(y_bundle.get("rs_period", []), dtype=float),
+                y_bundle.get("rs_matrix", np.zeros((0, 0))),
+                "DB Y RS",
+                "db-y-rs",
+            ),
+        ),
+        _source_chart(
+            "db-layer-fourier",
+            "DB Layer Fourier",
+            "DB Fourier Spectra",
+            "fourier",
+            "Frequency (Hz)",
+            "Fourier Amplitude",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("fas_frequency", []), dtype=float),
+                x_bundle.get("fas_matrix", np.zeros((0, 0))),
+                "DB X FAS",
+                "db-x-fas",
+                np.asarray(y_bundle.get("fas_frequency", []), dtype=float),
+                y_bundle.get("fas_matrix", np.zeros((0, 0))),
+                "DB Y FAS",
+                "db-y-fas",
+            ),
+        ),
+        _source_chart(
+            "db-layer-fourier-ratio",
+            "DB Layer Fourier Ratio",
+            "DB Fourier Spectra",
+            "fourier",
+            "Frequency (Hz)",
+            "Fourier Amplitude Ratio",
+            layer_views=_paired_layer_views(
+                layers,
+                np.asarray(x_bundle.get("fas_frequency", []), dtype=float),
+                x_bundle.get("fas_ratio_matrix", np.zeros((0, 0))),
+                "DB X FAS Ratio",
+                "db-x-fas-ratio",
+                np.asarray(y_bundle.get("fas_frequency", []), dtype=float),
+                y_bundle.get("fas_ratio_matrix", np.zeros((0, 0))),
+                "DB Y FAS Ratio",
+                "db-y-fas-ratio",
+            ),
+        ),
+    ]
+    return _source_family("db-layer-series", "DB Layer Series", "time", charts, supports_layer_selection=True)
 
 
 def _build_single_source_catalog_entry(
@@ -2410,7 +2629,7 @@ def _build_db_single_source_catalog_entry(file_name: str, bundle: Mapping[str, A
         "db_single",
         str(bundle.get("axis", "")),
         pair_key,
-        [_db_source_family_single(bundle)],
+        [_db_source_family_single(bundle), _db_source_family_single_layers(bundle)],
         artifact_pair_keys=[pair_key, f"DB_METHOD2|{source_label}", "DB_METHOD3|ALL"],
     )
 
@@ -2429,7 +2648,7 @@ def _build_db_pair_source_catalog_entry(
         "db_pair",
         "XY",
         pair_key,
-        [_db_source_family_pair(summary_df, x_bundle, y_bundle)],
+        [_db_source_family_pair(summary_df, x_bundle, y_bundle), _db_source_family_pair_layers(x_bundle, y_bundle)],
         artifact_pair_keys=[pair_key, f"DB_METHOD2|{Path(x_name).stem}", f"DB_METHOD2|{Path(y_name).stem}", "DB_METHOD3|ALL"],
     )
 
@@ -5633,6 +5852,74 @@ def _read_db_disp_bundle(
 
             query_cols = ["TIME", *total_cols, *relative_cols]
             vel_df = pd.read_sql_query(f"SELECT {', '.join(query_cols)} FROM VEL_DISP", conn)
+
+            def _sql_ident(name: str) -> str:
+                return '"' + str(name).replace('"', '""') + '"'
+
+            table_columns = {
+                str(table_row[0]): [str(col_row[1]) for col_row in conn.execute(f"PRAGMA table_info({_sql_ident(table_row[0])})").fetchall()]
+                for table_row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+
+            def _candidate_tables(required: Sequence[str], any_prefixes: Sequence[str]) -> List[Tuple[str, List[str]]]:
+                matches: List[Tuple[str, List[str]]] = []
+                for table_name, columns in table_columns.items():
+                    upper_columns = {column.upper(): column for column in columns}
+                    if not all(req.upper() in upper_columns for req in required):
+                        continue
+                    if not any(
+                        any(str(column).upper().startswith(prefix.upper()) for column in columns)
+                        for prefix in any_prefixes
+                    ):
+                        continue
+                    matches.append((table_name, columns))
+                return matches
+
+            def _layer_column(columns: Sequence[str], layer_no: int, suffixes: Sequence[str]) -> str | None:
+                normalized = {re.sub(r"[^A-Z0-9]", "", column.upper()): column for column in columns}
+                for suffix in suffixes:
+                    key = re.sub(r"[^A-Z0-9]", "", f"LAYER{layer_no}_{suffix}".upper())
+                    if key in normalized:
+                        return normalized[key]
+                return None
+
+            def _read_layer_matrix(
+                required_x: str,
+                any_prefixes: Sequence[str],
+                suffixes: Sequence[str],
+            ) -> Tuple[np.ndarray, np.ndarray]:
+                for table_name, columns in _candidate_tables([required_x], any_prefixes):
+                    layer_cols = [_layer_column(columns, layer_no, suffixes) for layer_no in layers]
+                    if not any(layer_cols):
+                        continue
+                    selected_cols = [required_x, *[col for col in layer_cols if col]]
+                    frame = pd.read_sql_query(
+                        f"SELECT {', '.join(_sql_ident(col) for col in selected_cols)} FROM {_sql_ident(table_name)}",
+                        conn,
+                    )
+                    frame[required_x] = pd.to_numeric(frame[required_x], errors="coerce")
+                    frame = frame.dropna(subset=[required_x]).sort_values(required_x)
+                    if frame.empty:
+                        continue
+                    x_values = frame[required_x].to_numpy(dtype=float)
+                    matrix_rows: List[np.ndarray] = []
+                    for col in layer_cols:
+                        if col and col in frame.columns:
+                            matrix_rows.append(pd.to_numeric(frame[col], errors="coerce").fillna(0.0).to_numpy(dtype=float))
+                        else:
+                            matrix_rows.append(np.zeros(x_values.size, dtype=float))
+                    return x_values, np.vstack(matrix_rows) if matrix_rows else np.zeros((0, 0), dtype=float)
+                return np.array([], dtype=float), np.zeros((0, 0), dtype=float)
+
+            th_time, acc_matrix = _read_layer_matrix("TIME", ("LAYER",), ("ACCEL", "ACC"))
+            _, vel_matrix = _read_layer_matrix("TIME", ("LAYER",), ("VEL",))
+            _, disp_output_matrix = _read_layer_matrix("TIME", ("LAYER",), ("DISP",))
+            _, arias_matrix = _read_layer_matrix("TIME", ("LAYER",), ("ARIAS",))
+            _, strain_matrix = _read_layer_matrix("TIME", ("LAYER",), ("STRAIN",))
+            _, stress_matrix = _read_layer_matrix("TIME", ("LAYER",), ("STRESS",))
+            rs_period, rs_matrix = _read_layer_matrix("PERIOD", ("LAYER",), ("RS",))
+            fas_frequency, fas_matrix = _read_layer_matrix("FREQUENCY", ("LAYER",), ("FAS",))
+            _, fas_ratio_matrix = _read_layer_matrix("FREQUENCY", ("LAYER",), ("FAS_RATIO", "FASRATIO"))
         finally:
             conn.close()
 
@@ -5680,6 +5967,18 @@ def _read_db_disp_bundle(
             "time": time,
             "disp_matrix": total_matrix,
             "relative_matrix": relative_matrix,
+            "time_history_time": th_time,
+            "acc_matrix": acc_matrix,
+            "vel_matrix": vel_matrix,
+            "disp_output_matrix": disp_output_matrix,
+            "arias_matrix": arias_matrix,
+            "strain_matrix": strain_matrix,
+            "stress_matrix": stress_matrix,
+            "rs_period": rs_period,
+            "rs_matrix": rs_matrix,
+            "fas_frequency": fas_frequency,
+            "fas_matrix": fas_matrix,
+            "fas_ratio_matrix": fas_ratio_matrix,
             "summary_df": summary_df,
             "total_time_df": _build_layer_time_df(time, depth_array, total_matrix, "db_total_m"),
             "relative_time_df": _build_layer_time_df(time, depth_array, relative_matrix, "db_relative_m"),

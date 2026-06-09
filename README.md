@@ -270,6 +270,11 @@ Bu mod strain/ivme entegrasyonunu atlar ve DEEPSOIL veritabanindaki displacement
   - `LAYERn_DISP_TOTAL`
   - `LAYERn_DISP_RELATIVE`
 - Katman derinlikleri: `PROFILES` tablosundan okunur
+- Source explorer icin opsiyonel DB serileri kolon desenine gore okunur:
+  - time histories: `Layer#_Accel`, `Layer#_Vel`, `Layer#_Disp`, `Layer#_Arias`, `Layer#_Strain`, `Layer#_Stress`
+  - response spectra: `Layer#_RS`
+  - Fourier spectra: `Layer#_FAS`, `Layer#_FAS_Ratio`
+  - tablo adlari DeepSoil surumune gore degisebildigi icin okuma tablo adindan cok `TIME`, `PERIOD`, `FREQUENCY` ve layer kolon desenlerine bakar
 
 Bu modda uretilen ciktilar:
 
@@ -288,6 +293,7 @@ Not:
 - Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla ayrilir; bu nedenle DB mode icin `Folder Select` tercih edilmelidir.
 - Yalniz `.db/.db3` secildiginde web arayuzu DB direct moduna otomatik gecebilir; yalniz `.xlsx` secildiginde tekrar Excel/strain moduna donebilir.
 - UI ozetindeki `Active` degeri secili moda gore islenecek aday sayisini, `Loaded XLSX` ve `Loaded DB` ise yuklenmis toplam dosya turlerini gosterir.
+- Detayli incelemede DB kaynaklari artik `DB Motion` yaninda `DB Layer Series` ailesini de uretir; bu aile yalniz veritabaninda bulunan ek serileri gosterir.
 
 ## Direction vs TBDY Total Farki (Grafikler Neden Farkli?)
 
