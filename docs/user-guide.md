@@ -1,6 +1,6 @@
 # DeepSoil Toplam Deplasman Kullanici Kilavuzu
 
-Son guncelleme: 2026-05-06
+Son guncelleme: 2026-06-09
 
 ## Arac ne cozer
 
@@ -36,6 +36,7 @@ Bugun aktif kaynak sistemi DeepSoil'dir. RSSeismic icin adapter siniri hazirdir 
   - DB direct total birincil yontem olur
   - toplam deplasman profili dogrudan veritabanindan okunur
   - detayli incelemede varsa DB time-history, strain, response spectrum ve Fourier serileri de gosterilir
+  - `deepsoilout.db3` dosyalari alt klasorlerden secildiginde X/Y esleme parent klasor adina gore yapilir
 
 ## Pair, single ve DB direct akislar
 
@@ -48,6 +49,7 @@ Bugun aktif kaynak sistemi DeepSoil'dir. RSSeismic icin adapter siniri hazirdir 
 - DB direct:
   - strain veya ivme entegrasyonu yerine veritabanindaki displacement kolonlari okunur
   - filter, baseline ve base reference kontrolleri devre disi kalir
+  - `VEL_DISP` yoksa `TIME_HISTORIES.LAYER#_DISP` ve `PROFILES.MIN/MAX_DISP_RELATIVE` ile profil ozetleri uretilir
   - `Layer#_Accel`, `Layer#_Vel`, `Layer#_Disp`, `Layer#_Arias`, `Layer#_Strain`, `Layer#_Stress`, `Layer#_RS`, `Layer#_FAS` ve `Layer#_FAS_Ratio` kolonlari mevcutsa source explorer'a eklenir
 
 ## Arayuz akisi
@@ -104,6 +106,7 @@ Yorumlama kurali:
 - Analizde toplam deplasman grafikleri veritabanina yazildiysa en guvenilir kaynak burasidir.
 - Arayuz DB direct varyantini birincil secim olarak isaretler.
 - `Detayli inceleme` bolumunde `DB Motion` ailesi total/relative deplasman profillerini, `DB Layer Series` ailesi ise veritabaninda bulunan katman ivme, hiz, deplasman, Arias, strain, stress, response spectrum ve Fourier serilerini acar.
+- Veritabani yalniz `TIME_HISTORIES` ve `PROFILES` semasini iceriyorsa profil ozeti `PROFILES` min/max deplasman degerlerinden, zaman serileri ise mevcut `LAYER#_*` kolonlarindan gelir.
 
 ### Manual pairing
 
@@ -133,7 +136,7 @@ Bu surumde yeni CSV veya PNG export eklenmemistir.
 ## Sinirlar ve dikkat notlari
 
 - `.xlsx` icinde eksik layer varsa tam strain tabanli yorum yapilamaz
-- DB direct toplam deplasman ozetleri yalniz veritabaninda ilgili displacement kolonlari varsa calisir; ek katman serileri veritabaninda ilgili kolonlar varsa gosterilir
+- DB direct toplam deplasman ozetleri `VEL_DISP` veya `TIME_HISTORIES`/`PROFILES` displacement alanlari varsa calisir; ek katman serileri veritabaninda ilgili kolonlar varsa gosterilir
 - profile referansi ile strain tabanli toplam profil ayni kavram degildir; ayni grafikte karsilastirma amaclidir
 - base reference secimi legacy davranisi etkiler ancak summary arayuzu veri varsa birden fazla proxy varyantini birlikte gosterebilir
 

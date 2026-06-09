@@ -5548,12 +5548,16 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
 
     file_names = sorted(file_map.keys())
     db_candidates = sorted([name for name in file_names if _candidate_kind(name) == "db" and _is_candidate_file(name, False)])
-    pairs, missing, pair_warnings = _resolve_xy_pairs(
-        db_candidates,
-        include_manip=False,
-        manual_pairing_enabled=manual_pairing_enabled,
-        manual_pairs=normalized_options.get("manualPairs"),
-    )
+    if manual_pairing_enabled:
+        pairs, missing, pair_warnings = _resolve_xy_pairs(
+            db_candidates,
+            include_manip=False,
+            manual_pairing_enabled=True,
+            manual_pairs=normalized_options.get("manualPairs"),
+        )
+    else:
+        pairs, missing = _resolve_db_xy_pairs(db_candidates, include_manip=False)
+        pair_warnings = []
     used_in_pairs = {name for pair in pairs for name in pair}
     singles = sorted([name for name in db_candidates if name not in used_in_pairs])
     manual_axis_map: Dict[str, str] = {}
@@ -5578,33 +5582,23 @@ def _process_db_batch_files(file_map: Mapping[str, bytes], options: Mapping[str,
         try:
             x_bundle = _read_db_disp_bundle(file_map[x_name], x_name, axis_override="X")
             y_bundle = _read_db_disp_bundle(file_map[y_name], y_name, axis_override="Y")
-            n_layers = min(
-                int(x_bundle["disp_matrix"].shape[0]),
-                int(y_bundle["disp_matrix"].shape[0]),
-                int(x_bundle["depths"].size),
-                int(y_bundle["depths"].size),
-            )
+            x_summary = x_bundle["summary_df"].copy()
+            y_summary = y_bundle["summary_df"].copy()
+            n_layers = min(int(len(x_summary)), int(len(y_summary)), int(x_bundle["depths"].size), int(y_bundle["depths"].size))
             if n_layers > 0:
+                x_total = pd.to_numeric(x_summary.get("DB_Total_maxabs_m"), errors="coerce").to_numpy(dtype=float)[:n_layers]
+                y_total = pd.to_numeric(y_summary.get("DB_Total_maxabs_m"), errors="coerce").to_numpy(dtype=float)[:n_layers]
+                x_relative = pd.to_numeric(x_summary.get("DB_Relative_maxabs_m"), errors="coerce").to_numpy(dtype=float)[:n_layers]
+                y_relative = pd.to_numeric(y_summary.get("DB_Relative_maxabs_m"), errors="coerce").to_numpy(dtype=float)[:n_layers]
                 summary_df = pd.DataFrame(
                     {
                         "Depth_m": x_bundle["depths"][:n_layers],
-                        "X_total_maxabs_m": np.max(np.abs(x_bundle["disp_matrix"][:n_layers, :]), axis=1),
-                        "Y_total_maxabs_m": np.max(np.abs(y_bundle["disp_matrix"][:n_layers, :]), axis=1),
-                        "X_relative_maxabs_m": np.max(np.abs(x_bundle["relative_matrix"][:n_layers, :]), axis=1),
-                        "Y_relative_maxabs_m": np.max(np.abs(y_bundle["relative_matrix"][:n_layers, :]), axis=1),
-                        "Total_resultant_maxabs_m": np.max(
-                            np.sqrt(
-                                x_bundle["disp_matrix"][:n_layers, :] ** 2 + y_bundle["disp_matrix"][:n_layers, :] ** 2
-                            ),
-                            axis=1,
-                        ),
-                        "Relative_resultant_maxabs_m": np.max(
-                            np.sqrt(
-                                x_bundle["relative_matrix"][:n_layers, :] ** 2
-                                + y_bundle["relative_matrix"][:n_layers, :] ** 2
-                            ),
-                            axis=1,
-                        ),
+                        "X_total_maxabs_m": x_total,
+                        "Y_total_maxabs_m": y_total,
+                        "X_relative_maxabs_m": x_relative,
+                        "Y_relative_maxabs_m": y_relative,
+                        "Total_resultant_maxabs_m": np.sqrt(x_total**2 + y_total**2),
+                        "Relative_resultant_maxabs_m": np.sqrt(x_relative**2 + y_relative**2),
                     }
                 )
                 _store_source_entry(_build_db_pair_source_catalog_entry(x_name, y_name, summary_df, x_bundle, y_bundle))
@@ -5814,52 +5808,36 @@ def _read_db_disp_bundle(
 
         conn = sqlite3.connect(temp_path)
         try:
-            profile_df = pd.read_sql_query(
-                (
-                    "SELECT LAYER_NUMBER, DEPTH_LAYER_TOP, DEPTH_LAYER_MID, "
-                    "MIN_DISP_RELATIVE, MAX_DISP_RELATIVE "
-                    "FROM PROFILES ORDER BY LAYER_NUMBER"
-                ),
-                conn,
-            )
-            if profile_df.empty:
-                raise ValueError(f"PROFILES table is empty in DB file: {file_name}")
-
-            vel_columns = [row[1] for row in conn.execute("PRAGMA table_info(VEL_DISP)").fetchall()]
-            if not vel_columns:
-                raise ValueError(f"VEL_DISP table not found in DB file: {file_name}")
-
-            layers: List[int] = []
-            depths: List[float] = []
-            total_cols: List[str] = []
-            relative_cols: List[str] = []
-            for _, row in profile_df.iterrows():
-                layer_no = int(row["LAYER_NUMBER"])
-                total_col = f"LAYER{layer_no}_DISP_TOTAL"
-                relative_col = f"LAYER{layer_no}_DISP_RELATIVE"
-                if total_col not in vel_columns or relative_col not in vel_columns:
-                    continue
-                depth = float(row["DEPTH_LAYER_TOP"])
-                if not np.isfinite(depth):
-                    continue
-                layers.append(layer_no)
-                depths.append(depth)
-                total_cols.append(total_col)
-                relative_cols.append(relative_col)
-
-            if not layers:
-                raise ValueError(f"No displacement columns found in VEL_DISP for DB file: {file_name}")
-
-            query_cols = ["TIME", *total_cols, *relative_cols]
-            vel_df = pd.read_sql_query(f"SELECT {', '.join(query_cols)} FROM VEL_DISP", conn)
-
             def _sql_ident(name: str) -> str:
                 return '"' + str(name).replace('"', '""') + '"'
 
+            table_names = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            table_lookup = {name.upper(): name for name in table_names}
             table_columns = {
-                str(table_row[0]): [str(col_row[1]) for col_row in conn.execute(f"PRAGMA table_info({_sql_ident(table_row[0])})").fetchall()]
-                for table_row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                name: [str(col_row[1]) for col_row in conn.execute(f"PRAGMA table_info({_sql_ident(name)})").fetchall()]
+                for name in table_names
             }
+
+            profile_table = table_lookup.get("PROFILES")
+            if not profile_table:
+                raise ValueError(f"PROFILES table not found in DB file: {file_name}")
+            profile_df = pd.read_sql_query(f"SELECT * FROM {_sql_ident(profile_table)} ORDER BY LAYER_NUMBER", conn)
+            if profile_df.empty:
+                raise ValueError(f"PROFILES table is empty in DB file: {file_name}")
+            if "LAYER_NUMBER" not in profile_df.columns or "DEPTH_LAYER_TOP" not in profile_df.columns:
+                raise ValueError(f"PROFILES table is missing LAYER_NUMBER/DEPTH_LAYER_TOP in DB file: {file_name}")
+
+            profile_layers: List[int] = []
+            profile_depths: List[float] = []
+            for _, row in profile_df.iterrows():
+                layer_no = int(row["LAYER_NUMBER"])
+                depth = float(row["DEPTH_LAYER_TOP"])
+                if not np.isfinite(depth):
+                    continue
+                profile_layers.append(layer_no)
+                profile_depths.append(depth)
+            if not profile_layers:
+                raise ValueError(f"PROFILES table contains no valid layer depths in DB file: {file_name}")
 
             def _candidate_tables(required: Sequence[str], any_prefixes: Sequence[str]) -> List[Tuple[str, List[str]]]:
                 matches: List[Tuple[str, List[str]]] = []
@@ -5884,12 +5862,13 @@ def _read_db_disp_bundle(
                 return None
 
             def _read_layer_matrix(
+                layer_numbers: Sequence[int],
                 required_x: str,
                 any_prefixes: Sequence[str],
                 suffixes: Sequence[str],
             ) -> Tuple[np.ndarray, np.ndarray]:
                 for table_name, columns in _candidate_tables([required_x], any_prefixes):
-                    layer_cols = [_layer_column(columns, layer_no, suffixes) for layer_no in layers]
+                    layer_cols = [_layer_column(columns, int(layer_no), suffixes) for layer_no in layer_numbers]
                     if not any(layer_cols):
                         continue
                     selected_cols = [required_x, *[col for col in layer_cols if col]]
@@ -5905,42 +5884,116 @@ def _read_db_disp_bundle(
                     matrix_rows: List[np.ndarray] = []
                     for col in layer_cols:
                         if col and col in frame.columns:
-                            matrix_rows.append(pd.to_numeric(frame[col], errors="coerce").fillna(0.0).to_numpy(dtype=float))
+                            matrix_rows.append(pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float))
                         else:
-                            matrix_rows.append(np.zeros(x_values.size, dtype=float))
+                            matrix_rows.append(np.full(x_values.size, np.nan, dtype=float))
                     return x_values, np.vstack(matrix_rows) if matrix_rows else np.zeros((0, 0), dtype=float)
                 return np.array([], dtype=float), np.zeros((0, 0), dtype=float)
 
-            th_time, acc_matrix = _read_layer_matrix("TIME", ("LAYER",), ("ACCEL", "ACC"))
-            _, vel_matrix = _read_layer_matrix("TIME", ("LAYER",), ("VEL",))
-            _, disp_output_matrix = _read_layer_matrix("TIME", ("LAYER",), ("DISP",))
-            _, arias_matrix = _read_layer_matrix("TIME", ("LAYER",), ("ARIAS",))
-            _, strain_matrix = _read_layer_matrix("TIME", ("LAYER",), ("STRAIN",))
-            _, stress_matrix = _read_layer_matrix("TIME", ("LAYER",), ("STRESS",))
-            rs_period, rs_matrix = _read_layer_matrix("PERIOD", ("LAYER",), ("RS",))
-            fas_frequency, fas_matrix = _read_layer_matrix("FREQUENCY", ("LAYER",), ("FAS",))
-            _, fas_ratio_matrix = _read_layer_matrix("FREQUENCY", ("LAYER",), ("FAS_RATIO", "FASRATIO"))
+            layers: List[int] = []
+            depths: List[float] = []
+            time = np.array([], dtype=float)
+            total_matrix = np.zeros((0, 0), dtype=float)
+            relative_matrix = np.zeros((0, 0), dtype=float)
+
+            vel_table = table_lookup.get("VEL_DISP")
+            if vel_table:
+                vel_columns = table_columns.get(vel_table, [])
+                total_cols: List[str] = []
+                relative_cols: List[str] = []
+                for layer_no, depth in zip(profile_layers, profile_depths):
+                    total_col = f"LAYER{layer_no}_DISP_TOTAL"
+                    relative_col = f"LAYER{layer_no}_DISP_RELATIVE"
+                    if total_col not in vel_columns or relative_col not in vel_columns:
+                        continue
+                    layers.append(layer_no)
+                    depths.append(depth)
+                    total_cols.append(total_col)
+                    relative_cols.append(relative_col)
+                if layers:
+                    query_cols = ["TIME", *total_cols, *relative_cols]
+                    vel_df = pd.read_sql_query(
+                        f"SELECT {', '.join(_sql_ident(col) for col in query_cols)} FROM {_sql_ident(vel_table)}",
+                        conn,
+                    )
+                    vel_df["TIME"] = pd.to_numeric(vel_df["TIME"], errors="coerce")
+                    vel_df = vel_df.dropna(subset=["TIME"]).sort_values("TIME")
+                    if not vel_df.empty:
+                        time = vel_df["TIME"].to_numpy(dtype=float)
+                        total_matrix = np.vstack(
+                            [pd.to_numeric(vel_df[col], errors="coerce").to_numpy(dtype=float) for col in total_cols]
+                        )
+                        relative_matrix = np.vstack(
+                            [pd.to_numeric(vel_df[col], errors="coerce").to_numpy(dtype=float) for col in relative_cols]
+                        )
+
+            if total_matrix.size == 0:
+                layers = list(profile_layers)
+                depths = list(profile_depths)
+                time, total_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("DISP",))
+                if total_matrix.size == 0 or time.size == 0:
+                    raise ValueError(
+                        f"No VEL_DISP displacement columns or TIME_HISTORIES LAYERn_DISP columns found in DB file: {file_name}"
+                    )
+                relative_matrix = total_matrix.copy()
+
+            th_time, acc_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("ACCEL", "ACC"))
+            _, vel_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("VEL",))
+            _, disp_output_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("DISP",))
+            _, arias_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("ARIAS",))
+            _, strain_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("STRAIN",))
+            _, stress_matrix = _read_layer_matrix(layers, "TIME", ("LAYER",), ("STRESS",))
+            rs_period, rs_matrix = _read_layer_matrix(layers, "PERIOD", ("LAYER",), ("RS",))
+            fas_frequency, fas_matrix = _read_layer_matrix(layers, "FREQUENCY", ("LAYER",), ("FAS",))
+            _, fas_ratio_matrix = _read_layer_matrix(layers, "FREQUENCY", ("LAYER",), ("FAS_RATIO", "FASRATIO"))
         finally:
             conn.close()
 
-        vel_df["TIME"] = pd.to_numeric(vel_df["TIME"], errors="coerce")
-        vel_df = vel_df.dropna(subset=["TIME"]).sort_values("TIME")
-        if vel_df.empty:
-            raise ValueError(f"VEL_DISP contains no valid time rows for DB file: {file_name}")
-
-        time = vel_df["TIME"].to_numpy(dtype=float)
-        total_matrix = np.vstack([pd.to_numeric(vel_df[col], errors="coerce").fillna(0.0).to_numpy(dtype=float) for col in total_cols])
-        relative_matrix = np.vstack(
-            [pd.to_numeric(vel_df[col], errors="coerce").fillna(0.0).to_numpy(dtype=float) for col in relative_cols]
-        )
         depth_array = np.asarray(depths, dtype=float)
+        def _row_reduce(matrix: np.ndarray, reducer: str, *, absolute: bool = False) -> np.ndarray:
+            values: List[float] = []
+            for row in np.asarray(matrix, dtype=float):
+                finite = row[np.isfinite(row)]
+                if finite.size == 0:
+                    values.append(float("nan"))
+                    continue
+                if absolute:
+                    finite = np.abs(finite)
+                if reducer == "min":
+                    values.append(float(np.min(finite)))
+                else:
+                    values.append(float(np.max(finite)))
+            return np.asarray(values, dtype=float)
 
-        total_maxabs = np.max(np.abs(total_matrix), axis=1)
-        total_pos = np.max(total_matrix, axis=1)
-        total_neg = np.min(total_matrix, axis=1)
-        relative_maxabs = np.max(np.abs(relative_matrix), axis=1)
-        relative_pos = np.max(relative_matrix, axis=1)
-        relative_neg = np.min(relative_matrix, axis=1)
+        total_maxabs = _row_reduce(total_matrix, "max", absolute=True)
+        total_pos = _row_reduce(total_matrix, "max")
+        total_neg = _row_reduce(total_matrix, "min")
+        relative_maxabs = _row_reduce(relative_matrix, "max", absolute=True)
+        relative_pos = _row_reduce(relative_matrix, "max")
+        relative_neg = _row_reduce(relative_matrix, "min")
+
+        if "MIN_DISP_RELATIVE" in profile_df.columns and "MAX_DISP_RELATIVE" in profile_df.columns:
+            profile_by_layer = profile_df.set_index(pd.to_numeric(profile_df["LAYER_NUMBER"], errors="coerce"))
+            profile_min: List[float] = []
+            profile_max: List[float] = []
+            for layer_no in layers:
+                try:
+                    row = profile_by_layer.loc[float(layer_no)]
+                    profile_min.append(float(row["MIN_DISP_RELATIVE"]))
+                    profile_max.append(float(row["MAX_DISP_RELATIVE"]))
+                except Exception:
+                    profile_min.append(float("nan"))
+                    profile_max.append(float("nan"))
+            profile_min_arr = np.asarray(profile_min, dtype=float)
+            profile_max_arr = np.asarray(profile_max, dtype=float)
+            profile_maxabs = np.nanmax(np.vstack([np.abs(profile_min_arr), np.abs(profile_max_arr)]), axis=0)
+            replace_mask = np.isfinite(profile_maxabs)
+            total_maxabs = np.where(replace_mask, profile_maxabs, total_maxabs)
+            total_pos = np.where(np.isfinite(profile_max_arr), profile_max_arr, total_pos)
+            total_neg = np.where(np.isfinite(profile_min_arr), profile_min_arr, total_neg)
+            relative_maxabs = np.where(replace_mask, profile_maxabs, relative_maxabs)
+            relative_pos = np.where(np.isfinite(profile_max_arr), profile_max_arr, relative_pos)
+            relative_neg = np.where(np.isfinite(profile_min_arr), profile_min_arr, relative_neg)
 
         axis_label = str(axis_override or _infer_axis_label(file_name)).upper()
         if axis_label not in {"X", "Y", "SINGLE"}:
@@ -7161,6 +7214,105 @@ def find_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tup
         else:
             missing.append(x_name)
 
+    return pairs, missing
+
+
+DB_PAIRING_NOISE_TOKENS = {
+    "MOTION",
+    "PROFILE",
+    "RESULT",
+    "RESULTS",
+    "OUTPUT",
+    "OUT",
+    "DB",
+    "DB3",
+    "DEEPSOIL",
+    "DEEPSOILOUT",
+    "ACC",
+    "MP",
+    "DD1",
+    "DD2",
+    "DD3",
+    "DD4",
+    "X",
+    "Y",
+    "H1",
+    "H2",
+    "HN1",
+    "HN2",
+    "E",
+    "W",
+    "N",
+    "S",
+    "EW",
+    "NS",
+    "000",
+    "090",
+    "180",
+    "270",
+    "300",
+    "360",
+}
+
+
+def _db_pairing_tokens(name: str) -> Tuple[List[str], set[str]]:
+    label = (_record_label_from_name(name) or Path(str(name)).stem).upper()
+    label = label.replace("HORIONTAL", "HORIZONTAL")
+    raw_tokens = [token for token in re.split(r"[^A-Z0-9]+", label) if token]
+    tokens: List[str] = []
+    numbers: set[str] = set()
+    for token in raw_tokens:
+        if token in DB_PAIRING_NOISE_TOKENS:
+            continue
+        cleaned = re.sub(r"(000|090|180|270|300|360)$", "", token)
+        if re.search(r"\d", cleaned):
+            cleaned = re.sub(r"[NSEW]$", "", cleaned)
+        if cleaned and cleaned not in DB_PAIRING_NOISE_TOKENS:
+            tokens.append(cleaned)
+            numbers.update(re.findall(r"\d+", cleaned))
+    return tokens, numbers
+
+
+def _score_db_pair(x_name: str, y_name: str) -> int:
+    if _infer_axis_label(x_name) != "X" or _infer_axis_label(y_name) != "Y":
+        return -10_000
+    x_tokens, x_numbers = _db_pairing_tokens(x_name)
+    y_tokens, y_numbers = _db_pairing_tokens(y_name)
+    shared_tokens = set(x_tokens) & set(y_tokens)
+    shared_numbers = x_numbers & y_numbers
+    score = 40
+    score += len(shared_tokens) * 24
+    score += len(shared_numbers) * 18
+    for number in shared_numbers:
+        if len(number) >= 6:
+            score += 90
+        elif len(number) >= 4:
+            score += 30
+    if not shared_tokens and not shared_numbers:
+        score -= 120
+    return score
+
+
+def _resolve_db_xy_pairs(file_names: Sequence[str], include_manip: bool = False) -> Tuple[List[Tuple[str, str]], List[str]]:
+    candidates = sorted({name for name in file_names if _is_candidate_file(name, include_manip)})
+    x_files = [name for name in candidates if _infer_axis_label(name) == "X"]
+    y_files = [name for name in candidates if _infer_axis_label(name) == "Y"]
+    available_y = set(y_files)
+    pairs: List[Tuple[str, str]] = []
+    missing: List[str] = []
+    for x_name in x_files:
+        best_y = ""
+        best_score = -10_000
+        for y_name in sorted(available_y):
+            score = _score_db_pair(x_name, y_name)
+            if score > best_score:
+                best_score = score
+                best_y = y_name
+        if best_y and best_score >= 100:
+            pairs.append((x_name, best_y))
+            available_y.remove(best_y)
+        else:
+            missing.append(x_name)
     return pairs, missing
 
 

@@ -270,6 +270,10 @@ Bu mod strain/ivme entegrasyonunu atlar ve DEEPSOIL veritabanindaki displacement
   - `LAYERn_DISP_TOTAL`
   - `LAYERn_DISP_RELATIVE`
 - Katman derinlikleri: `PROFILES` tablosundan okunur
+- `VEL_DISP` bulunmayan DeepSoil DB semalarinda fallback:
+  - displacement zaman serisi: `TIME_HISTORIES.LAYER#_DISP`
+  - profil ozeti: `PROFILES.MIN_DISP_RELATIVE` / `PROFILES.MAX_DISP_RELATIVE`
+  - bu semada zaman serisi yalniz veritabaninda bulunan layer kolonlari icin gosterilir
 - Source explorer icin opsiyonel DB serileri kolon desenine gore okunur:
   - time histories: `Layer#_Accel`, `Layer#_Vel`, `Layer#_Disp`, `Layer#_Arias`, `Layer#_Strain`, `Layer#_Stress`
   - response spectra: `Layer#_RS`
@@ -291,6 +295,7 @@ Not:
 
 - DB direct modunda filtreleme, baseline duzeltme, base reference ve integration compare uygulanmaz.
 - Browser tarafinda ayni isimli `deepsoilout.db3` dosyalari parent klasor adiyla ayrilir; bu nedenle DB mode icin `Folder Select` tercih edilmelidir.
+- DB direct X/Y esleme parent klasor adindaki `Motion_*_X_*` / `Motion_*_Y_*`, RSN, kayit numarasi ve azimut/component tokenlarina gore fuzzy olarak yapilir.
 - Yalniz `.db/.db3` secildiginde web arayuzu DB direct moduna otomatik gecebilir; yalniz `.xlsx` secildiginde tekrar Excel/strain moduna donebilir.
 - UI ozetindeki `Active` degeri secili moda gore islenecek aday sayisini, `Loaded XLSX` ve `Loaded DB` ise yuklenmis toplam dosya turlerini gosterir.
 - Detayli incelemede DB kaynaklari artik `DB Motion` yaninda `DB Layer Series` ailesini de uretir; bu aile yalniz veritabaninda bulunan ek serileri gosterir.

@@ -23,7 +23,7 @@ import {
   getScopedSpectrumPeriodMax,
 } from "./viewer_controls_state.mjs?v=20260410b";
 
-const APP_VERSION = "20260609a";
+const APP_VERSION = "20260609b";
 const MANUAL_PAIR_STORAGE_KEY = "deepsoil-total-disp.manual-pairs.v1";
 const SHELL_MODE_STORAGE_KEY = "deepsoil-total-disp.shell-mode.v1";
 const VIEWER_PREFS_STORAGE_KEY = "deepsoil-total-disp.viewer-prefs.v1";

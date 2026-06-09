@@ -1,5 +1,5 @@
 const PYODIDE_BASE = "https://cdn.jsdelivr.net/pyodide/v0.27.3/full/";
-const APP_VERSION = "20260609a";
+const APP_VERSION = "20260609b";
 
 importScripts(`${PYODIDE_BASE}pyodide.js`);
 

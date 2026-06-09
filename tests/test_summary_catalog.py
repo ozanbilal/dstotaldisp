@@ -112,7 +112,7 @@ def test_db_direct_summary_catalog_prefers_direct_total():
     assert len(summary["summaryCatalog"]) == 1
     entry = summary["summaryCatalog"][0]
 
-    assert entry["summaryKind"] == "db_pair"
+    assert entry["summaryKind"] == "db_single"
     assert entry["preferredVariantKey"] == "db_direct_total"
     assert entry["coverage"]["limitedData"] is False
     assert [variant["variantKey"] for variant in entry["variants"]] == ["db_direct_total"]
