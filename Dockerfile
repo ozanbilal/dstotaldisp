@@ -1,8 +1,7 @@
-FROM nginx:1.27-alpine
-
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY . /usr/share/nginx/html
-
+FROM node:20-slim
+WORKDIR /app
+COPY web-ui/ ./
+RUN npm install --production
 EXPOSE 8080
-
-CMD ["nginx", "-g", "daemon off;"]
+ENV NODE_ENV=production
+CMD ["node", "server.js"]
