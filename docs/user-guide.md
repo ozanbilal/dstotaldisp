@@ -1,6 +1,6 @@
 # DeepSoil Toplam Deplasman Kullanici Kilavuzu
 
-Son guncelleme: 2026-06-09
+Son guncelleme: 2026-06-10
 
 ## Arac ne cozer
 
@@ -70,6 +70,7 @@ Bugun aktif kaynak sistemi DeepSoil'dir. RSSeismic icin adapter siniri hazirdir 
   - `chart`
   - `layer`
 - `Viewer sources` sayaci dosya adedini degil, detay explorer'a giren source catalog kayitlarini sayar. Bir pair isleminde ayni iki dosya icin genelde `X`, `Y` ve ortak `pair` olmak uzere birden fazla viewer source olusur.
+- Canli sitede analiz hesaplari browser icindeki Pyodide worker'da calisir; `disp_core.py` Python cekirdegi tarayiciya kaynak olarak yuklenir.
 
 ## Yontemler
 
@@ -116,7 +117,7 @@ Yorumlama kurali:
 ## Grafik nasil okunur
 
 - x ekseni deplasmani, y ekseni derinligi gosterir
-- derinlik ekseni ters cevrilir; ustte zemin yuze yi, altta daha derin katmanlar bulunur
+- derinlik ekseni ters cevrilir; ustte zemin yuzeyi, altta daha derin katmanlar bulunur
 - kalin ve baskin cizgi birincil yontemdir
 - daha soluk veya kesikli cizgiler destekleyici varyantlardir
 - "sinirli veri" etiketi, mevcut dosyanin tum yontemleri desteklemedigini gosterir
@@ -157,4 +158,5 @@ Bu surumde yeni CSV veya PNG export eklenmemistir.
 
 - UI dokumantasyonu: `web-ui/docs.html`
 - Teknik repo aciklamasi: `README.md`
+- Gelistirici ve agent rehberi: `docs/developer-guide.md`
 - Ham workbook ve hesap cekirdegi ayrintilari: `disp_core.py`

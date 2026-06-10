@@ -3,15 +3,17 @@
 DEEPSOIL sonuc dosyalarindan toplam ve goreceli yerdegistirme profillerini ureten arac.
 Hem CLI (`GetDisp4.py`) hem de tarayici tabanli WASM arayuz (`web-ui/`) ayni hesap cekirdegini (`disp_core.py`) kullanir.
 
-## Mimari Diyagram
+## Mimari ve Gelistirici Rehberi
 
-- [dstotaldisp-overview.drawio](docs/dstotaldisp-overview.drawio)
+- Gelistirici / agent handoff rehberi: `docs/developer-guide.md`
+- Bu rehber runtime modlarini, Pyodide veri akisini, canli deploy notlarini, DB direct fallback davranisini ve test matrisini tek yerde toplar.
 
 ## Kullanici Dokumantasyonu
 
 - Site uzerinden erisilen kullanim kilavuzu: `web-ui/docs.html`
 - Kanonik kaynak: `docs/user-guide.md`
-- Repo davranisi, UI akisi veya yontem gecerlilik kurallari degistiginde bu iki nokta birlikte guncellenmelidir.
+- Gelistirici ve agent bakim rehberi: `docs/developer-guide.md`
+- Repo davranisi, UI akisi, deploy sozlesmesi veya yontem gecerlilik kurallari degistiginde ilgili dokumantasyon ayni commit icinde guncellenmelidir.
 
 ## Ne Cozer?
 
@@ -385,8 +387,12 @@ Railway notu:
 
 - Bu proje server-side Python uygulamasi degildir.
 - `disp_core.py`, browser tarafinda Pyodide worker icine yuklenir.
-- Railway uzerinde yayin icin repo kokunde bulunan `Dockerfile` kullanilmalidir.
-- Deploy sonrasi ana adres otomatik olarak `/web-ui/` yoluna yonlenir.
+- Railway/canli yayin icin repo kokunde bulunan `Dockerfile` kullanilir.
+- Mevcut Docker image'i `web-ui/` icerigini ve repo kokundeki `disp_core.py` dosyasini `/app` icine kopyalar.
+- Canli Node gatekeeper `web-ui/server.js` dosyasidir; `/disp_core.py` ve `/web-ui/disp_core.py` endpoint'leri Python kaynak dosyasini HTML fallback olmadan servis etmelidir.
+- `disp_core.py` endpoint'i HTML dondururse Pyodide import asamasinda `SyntaxError` verir; stack trace icinde `<p class="eyebrow">...` gorunmesi bu duruma isaret eder.
+- Deploy sonrasi ana adres `/web-ui/` yolundan calisir; repo kokundeki `index.html` lokal/static yonlendirme icin korunur.
+- Canli domainin hangi git remote'unu izledigini varsaymayin; son bilinen canli deploy akisi icin `origin/main` yaninda `geodisp/main` da guncellenmistir. Ayrinti: `docs/developer-guide.md`.
 
 UI ozellikleri:
 
@@ -439,6 +445,13 @@ UI notlari:
 - `GetDisp4.py`: CLI giris noktasi
 - `report_alignment.py`: rapor ve plot uretici
 - `web-ui/`: Pyodide arayuz
+- `web-ui/server.js`: canli Node auth gatekeeper ve static server
+- `web-ui/py/pyodide_entry.py`: Pyodide worker ile Python cekirdegi arasindaki kopru
+- `Dockerfile`: Railway/canli Node image tarifi
+- `docs/user-guide.md`: kullaniciya acik kanonik kilavuz
+- `docs/developer-guide.md`: yeni session/agent icin repo, runtime, deploy ve test rehberi
+- `AGENTS.md`: zorunlu bakim ve dokumantasyon kurallari
+- `tests/`: Python ve Node regresyon testleri
 
 ## Bilinen Yorum Notu
 

@@ -2,7 +2,7 @@
 
 ## Run
 
-Serve from the `Deepsoil` directory so `../disp_core.py` is reachable by `web-ui/worker.js`.
+Serve from the repo root so `../disp_core.py` and `/disp_core.py` are reachable by `web-ui/worker.js`.
 
 ```powershell
 cd "<path-to-dstotaldisp>"
@@ -17,6 +17,8 @@ Then open:
 
 - Browser target: Chrome / Edge.
 - Uses client-side Pyodide (no backend service).
+- `worker.js` fetches `disp_core.py` and writes it into the Pyodide FS as `/app/disp_core.py`.
+- In production, `server.js` must serve `/disp_core.py` and `/web-ui/disp_core.py` as Python source, not as the SPA HTML fallback.
 - Input mode:
   - folder selection (`webkitdirectory`)
   - direct multi-file selection (`.xlsx`, `.db`, `.db3`)
@@ -29,6 +31,8 @@ Then open:
     - manual pair'e girmeyen adaylar single olarak islenir
   - `Use DB3 directly` toggle:
     - reads `VEL_DISP` and `PROFILES` tables directly from `.db/.db3`
+    - falls back to `TIME_HISTORIES.LAYER#_DISP` plus `PROFILES.MIN_DISP_RELATIVE` / `PROFILES.MAX_DISP_RELATIVE` when `VEL_DISP` is absent
+    - exposes optional DB layer series when matching layer columns exist: acceleration, velocity, displacement, Arias, strain, stress, response spectra and Fourier spectra
     - disables filtering, baseline, integration-compare and base-reference controls
   - `Compare with FFT-Regularized integration` toggle (default off)
   - `Include resultant (RSS) totals in Depth_Profiles` toggle (default off)
@@ -96,3 +100,17 @@ Then open:
   - DB direct mode aciksa:
     - `output_method2_db_<record>.xlsx`
     - `output_method3_db_profiles_all.xlsx`
+
+## Production Gatekeeper
+
+The Railway/live image is a Node static/auth gatekeeper, not a Python server.
+
+- `Dockerfile` copies `web-ui/` and root `disp_core.py` into `/app`.
+- `web-ui/server.js` handles SSO/auth and static serving.
+- `/health` is public.
+- `/disp_core.py` and `/web-ui/disp_core.py` must return `text/x-python`.
+- Missing extension paths should return `404 text/plain`; they should not fall through to `index.html`.
+
+If Pyodide reports a Python `SyntaxError` and the referenced `disp_core.py` line contains HTML such as `<p class="eyebrow">`, the server is returning HTML for `disp_core.py`.
+
+See `../docs/developer-guide.md` for the full runtime and deploy contract.
